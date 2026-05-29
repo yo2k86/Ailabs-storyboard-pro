@@ -1,1481 +1,954 @@
-import React, { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from 'firebase/firestore';
-
-// === KAMUS VISUAL HANTU LOKAL (MISTIK NUSANTARA) ===
-const GHOST_PROMPTS = {
-  "Pocong": "A terrifying figure wrapped tightly in a dirty, soil-stained white burial shroud (kain kafan), tied at the head, neck, and feet. Its face is decaying, dark, with glowing hollow eyes.",
-  "Kuntilanak": "A ghastly female spirit with long, disheveled black hair covering parts of her pale, decaying face. She wears a long, tattered, dirty white dress covered in faint bloodstains.",
-  "Genderuwo": "A massive, towering humanoid creature covered in thick, dark, matted hair. It has glowing red eyes, sharp fangs protruding from its mouth, and long sharp claws.",
-  "Tuyul": "A small, pale, child-like entity with a completely bald head. Its skin is slightly translucent and grayish, wearing only a small, dirty loincloth.",
-  "Sundel Bolong": "A horrifying female spirit similar to Kuntilanak, wearing a long white dress, but with a massive, gory, gaping hole in her back revealing her decaying internal organs and spine.",
-  "Kuyang": "A terrifying female vampire appearing as a floating human head with dangling, pulsating veins, lungs, and stomach, glowing with a faint eerie red light.",
-  "Leak Bali": "A terrifying Balinese black magic practitioner manifesting as a floating severed head with glowing eyes, huge sharp fangs, and a long tongue, with internal organs trailing beneath it.",
-  "Wewe Gombel": "An old, terrifying hag with long, disheveled hair, extremely long and sagging breasts that reach her stomach, wearing tattered traditional clothing.",
-  "Jelangkung": "A creepy, traditional Indonesian spirit-summoning doll made from a coconut shell head and wooden cross stick body, draped in small, dirty, tattered doll clothes.",
-  "Banaspati": "A terrifying, floating ball of aggressive, cursed fire that burns with unnatural dark orange and crimson flames, sometimes briefly revealing a screaming, demonic skull inside.",
-  "Jenglot": "A tiny, terrifying mummified humanoid creature with long, unkempt black hair, sharp fangs protruding from a tiny decaying mouth, and incredibly long, sharp fingernails.",
-  "Babi Ngepet": "A monstrous, demonic boar with glowing red eyes, covered in unnatural dark, bristly fur, emanating a dark aura, associated with dark magic and greed."
-};
-
-// === HELPER UNTUK INDEXEDDB (Menghindari limit 5MB LocalStorage) ===
-const DB_NAME = 'AilabsDB';
-const STORE_NAME = 'projects';
-
-const initDB = () => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-};
-
-const saveToIDB = async (key, data) => {
-  try {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, 'readwrite');
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.put(data, key);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error("IDB Save Error:", err);
-  }
-};
-
-const getFromIDB = async (key) => {
-  try {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, 'readonly');
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.get(key);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error("IDB Get Error:", err);
-    return null;
-  }
-};
-
-// === FUNGSI KOMPRESI GAMBAR (UNTUK THUMBNAIL FIREBASE) ===
-const compressImageBase64 = (base64Str, maxWidth = 150) => {
-  return new Promise((resolve) => {
-    if (!base64Str) {
-      resolve(null);
-      return;
-    }
-    const img = new Image();
-    img.src = base64Str;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const scaleSize = maxWidth / img.width;
-      canvas.width = maxWidth;
-      canvas.height = img.height * scaleSize;
-      
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      
-      resolve(canvas.toDataURL('image/jpeg', 0.3));
-    };
-    img.onerror = () => {
-      console.error("Gagal mengompres gambar");
-      resolve(null);
-    };
-  });
-};
-
-// === URL GOOGLE APPS SCRIPT ===
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwgYCCYXKE1RPLdUCeq3Lv7rqGaOPkl19P9LmsiXDFuAWNpgtlHI2-NWoJ85v10QuDVOw/exec";
-
-// === FIREBASE INIT ===
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-const App = () => {
-  
-  // --- STATE UNTUK SISTEM LOGIN & AKSES SPREADSHEET ---
-  const [loginEmail, setLoginEmail] = useState("");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [hasAccess, setHasAccess] = useState(false);
-  const [isCheckingAccess, setIsCheckingAccess] = useState(false);
-  const [loginError, setLoginError] = useState("");
-  const [activeUsername, setActiveUsername] = useState("");
-  const [activeEmail, setActiveEmail] = useState("");
-
-  const [idea, setIdea] = useState("");
-  const [sceneRevision, setSceneRevision] = useState("");
-  const [genre, setGenre] = useState("Action High-Octane");
-  const [characterCount, setCharacterCount] = useState("Otomatis"); 
-  const [isAlternatingCharacters, setIsAlternatingCharacters] = useState(false);
-  const [partCount, setPartCount] = useState("Otomatis"); 
-  const [aspectRatio, setAspectRatio] = useState("16:9"); 
-  const [storyboard, setStoryboard] = useState([]);
-  
-  // --- STATE BANK FOTO GLOBAL & ASET ---
-  const [globalFaceRefs, setGlobalFaceRefs] = useState({
-    A: [], B: [], C: [], D: [], E: []
-  });
-
-  const [additionalAssetRefs, setAdditionalAssetRefs] = useState({
-    1: [], 2: [], 3: [], 4: [], 5: []
-  });
-
-  // --- STATE HANTU TERPILIH ---
-  const [selectedGhosts, setSelectedGhosts] = useState([]);
-
-  const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
-  const [isExtendingStoryboard, setIsExtendingStoryboard] = useState(false); 
-  const [extendPartCount, setExtendPartCount] = useState(2); 
-  const [generatingImages, setGeneratingImages] = useState({}); 
-  const [generatingVideos, setGeneratingVideos] = useState({});
-  const [videoEngines, setVideoEngines] = useState({}); 
-  
-  const [revisingImage, setRevisingImage] = useState({}); 
-  const [revisingMotion, setRevisingMotion] = useState({}); 
-  const [isGeneratingAllImages, setIsGeneratingAllImages] = useState(false);
-  
-  const [imageRevisionInputs, setImageRevisionInputs] = useState({});
-  const [motionRevisionInputs, setMotionRevisionInputs] = useState({});
-
-  const [previewImage, setPreviewImage] = useState(null);
-  const [previewVideo, setPreviewVideo] = useState(null); 
-  const [error, setError] = useState("");
-
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [projectHistory, setProjectHistory] = useState([]);
-  const [historySuccessMsg, setHistorySuccessMsg] = useState("");
-
-  const [copiedStates, setCopiedStates] = useState({});
-  const [showVideoPreview, setShowVideoPreview] = useState({});
-
-  const bangProLogoUrl = "https://i.ibb.co.com/pvp9g29x/Whats-App-Image-2025-12-25-at-02-28-36.jpg"; 
-
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const savedSession = localStorage.getItem("ailabs_session");
-    if (savedSession) {
-      try {
-        const parsed = JSON.parse(savedSession);
-        if (parsed && parsed.email) {
-          setLoginEmail(parsed.email);
-          setActiveEmail(parsed.email);
-          setActiveUsername(parsed.username);
-          setIsLoggedIn(true);
-          setHasAccess(true);
-        }
-      } catch (e) {
-        console.error("Gagal memuat sesi:", e);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    const loadDraft = async () => {
-      const parsed = await getFromIDB("ailabs_project_draft");
-      if (parsed) {
-        if (parsed.idea) setIdea(parsed.idea);
-        if (parsed.sceneRevision) setSceneRevision(parsed.sceneRevision);
-        if (parsed.genre) setGenre(parsed.genre);
-        if (parsed.characterCount) setCharacterCount(parsed.characterCount);
-        if (parsed.isAlternatingCharacters !== undefined) setIsAlternatingCharacters(parsed.isAlternatingCharacters);
-        if (parsed.partCount) setPartCount(parsed.partCount);
-        if (parsed.aspectRatio) setAspectRatio(parsed.aspectRatio);
-        if (parsed.storyboard && Array.isArray(parsed.storyboard)) setStoryboard(parsed.storyboard);
-        if (parsed.selectedGhosts) setSelectedGhosts(parsed.selectedGhosts);
-        if (parsed.globalFaceRefs) setGlobalFaceRefs(parsed.globalFaceRefs);
-        if (parsed.additionalAssetRefs) {
-          if (Array.isArray(parsed.additionalAssetRefs)) {
-            setAdditionalAssetRefs({ 1: parsed.additionalAssetRefs, 2: [], 3: [], 4: [], 5: [] });
-          } else {
-            setAdditionalAssetRefs(parsed.additionalAssetRefs);
-          }
-        }
-        if (parsed.imageRevisionInputs) setImageRevisionInputs(parsed.imageRevisionInputs);
-        if (parsed.motionRevisionInputs) setMotionRevisionInputs(parsed.motionRevisionInputs);
-        if (parsed.videoEngines) setVideoEngines(parsed.videoEngines); 
-      }
-    };
-    loadDraft();
-  }, []);
-
-  useEffect(() => {
-    const projectData = { idea, sceneRevision, genre, characterCount, isAlternatingCharacters, partCount, aspectRatio, storyboard, selectedGhosts, globalFaceRefs, additionalAssetRefs, imageRevisionInputs, motionRevisionInputs, videoEngines };
-    saveToIDB("ailabs_project_draft", projectData);
-  }, [idea, sceneRevision, genre, characterCount, isAlternatingCharacters, partCount, aspectRatio, storyboard, selectedGhosts, globalFaceRefs, additionalAssetRefs, imageRevisionInputs, motionRevisionInputs, videoEngines]);
-
-  useEffect(() => {
-    if (!user) return;
-    const historyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'history');
-    const unsubscribe = onSnapshot(
-      historyRef,
-      (snapshot) => {
-        const historyData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        historyData.sort((a, b) => b.timestamp - a.timestamp);
-        setProjectHistory(historyData);
-      },
-      (error) => console.error("Gagal memuat histori dari Firebase:", error)
-    );
-    return () => unsubscribe();
-  }, [user]);
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    if (!loginEmail.trim()) { setLoginError("Masukkan Email Gmail dulu brow!"); return; }
-    setLoginError(""); setIsCheckingAccess(true);
-    try {
-      const response = await fetch(`${GOOGLE_SCRIPT_URL}?email=${encodeURIComponent(loginEmail)}`);
-      const data = await response.json();
-      if (data.success) {
-        setIsLoggedIn(true); setHasAccess(true); setActiveUsername(data.username); setActiveEmail(data.email);
-        localStorage.setItem("ailabs_session", JSON.stringify({ email: data.email, username: data.username }));
-      } else {
-        setLoginError(data.message || "Akses Ditolak! Email tidak cocok.");
-      }
-    } catch (err) {
-      setLoginError("Gagal terhubung ke server database.");
-    } finally { setIsCheckingAccess(false); }
-  };
-
-  const handleLogout = () => {
-    setIsLoggedIn(false); setHasAccess(false); setLoginEmail(""); setActiveUsername(""); setActiveEmail("");
-    localStorage.removeItem("ailabs_session");
-  };
-
-  const saveToHistory = async () => {
-    if (!user) { setError("Sedang menghubungkan ke server cloud... Tunggu sebentar."); return; }
-    if (!idea.trim() && storyboard.length === 0) { setError("Isi ide atau buat storyboard dulu sebelum menyimpan ke histori."); return; }
-
-    setError(""); setHistorySuccessMsg("Mengompres gambar untuk Cloud... Mohon tunggu.");
-
-    const safeStoryboard = await Promise.all(storyboard.map(async (s) => {
-      const thumbnail = s.imageUrl ? await compressImageBase64(s.imageUrl, 150) : null;
-      return {
-        shotNumber: s.shotNumber || "Scene",
-        imagePrompt: s.imagePrompt || "",
-        motionPrompt: s.motionPrompt || "",
-        imageUrl: thumbnail,
-        videoUrl: s.videoUrl || null 
-      };
-    }));
-
-    const timestamp = Date.now();
-    const historyId = timestamp.toString();
-
-    const fullEntry = {
-      timestamp, date: new Date().toLocaleString('id-ID'), idea, sceneRevision, genre, partCount, characterCount, aspectRatio, storyboard: safeStoryboard
-    };
-
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'history', historyId);
-      await setDoc(docRef, fullEntry);
-      setError(""); setHistorySuccessMsg("Disimpan ke Cloud! (Gambar diamankan dalam versi Thumbnail Mini)");
-      setTimeout(() => setHistorySuccessMsg(""), 4000);
-    } catch (e) {
-      setError("🚨 GAGAL MENYIMPAN KE CLOUD! Periksa koneksi atau ukuran data masih terlalu besar.");
-    }
-  };
-
-  const loadFromHistory = (entry) => {
-    setIdea(entry.idea || ""); setSceneRevision(entry.sceneRevision || ""); setGenre(entry.genre || "Action High-Octane"); 
-    setCharacterCount(entry.characterCount || "Otomatis"); setPartCount(entry.partCount || 2); setAspectRatio(entry.aspectRatio || "16:9"); 
-    setStoryboard(entry.storyboard || []); setImageRevisionInputs(entry.imageRevisionInputs || {}); setMotionRevisionInputs(entry.motionRevisionInputs || {});
-    setVideoEngines({}); 
-    setIsHistoryOpen(false); setHistorySuccessMsg("Proyek lama berhasil dimuat dari Cloud!"); setTimeout(() => setHistorySuccessMsg(""), 3000);
-  };
-
-  const deleteHistory = async (id) => {
-    if (!user) return;
-    try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', id.toString())); } catch (e) {}
-  };
-
-  const fetchWithRetry = async (url, options, retries = 5) => {
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    for (let i = 0; i < retries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        return await response.json();
-      } catch (err) {
-        if (i === retries - 1) throw err;
-        await new Promise(res => setTimeout(res, delays[i]));
-      }
-    }
-  };
-
-  // --- HANDLER WAJAH LOKAL & GLOBAL ---
-  const handleGlobalFaceUpload = async (char, event) => {
-    const files = Array.from(event.target.files);
-    if (!files.length) return;
-    const readAsDataURL = (file) => new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type });
-      reader.readAsDataURL(file);
-    });
-    const processedFiles = await Promise.all(files.map(readAsDataURL));
-    setGlobalFaceRefs(prev => {
-      const currentRefs = prev[char] || [];
-      const newRefsToAdd = processedFiles.map((file, idx) => ({ ...file, partLabel: `Part ${currentRefs.length + idx + 1}` }));
-      const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
-      return { ...prev, [char]: newRefs };
-    });
-    event.target.value = '';
-  };
-
-  const removeGlobalFace = (char, index) => {
-    setGlobalFaceRefs(prev => {
-      const newRefs = [...(prev[char] || [])];
-      newRefs.splice(index, 1); return { ...prev, [char]: newRefs };
-    });
-  };
-
-  const updateGlobalFaceLabel = (char, index, newValue) => {
-    setGlobalFaceRefs(prev => {
-      const newRefs = [...(prev[char] || [])];
-      newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [char]: newRefs };
-    });
-  };
-
-  // --- HANDLER ASET TAMBAHAN ---
-  const handleAdditionalAssetUpload = async (slotId, event) => {
-    const files = Array.from(event.target.files);
-    if (!files.length) return;
-    const readAsDataURL = (file) => new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type });
-      reader.readAsDataURL(file);
-    });
-    const processedFiles = await Promise.all(files.map(readAsDataURL));
-    setAdditionalAssetRefs(prev => {
-      const currentRefs = prev[slotId] || [];
-      const newRefsToAdd = processedFiles.map((file, idx) => ({ ...file, partLabel: `Aset ${slotId}` }));
-      const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
-      return { ...prev, [slotId]: newRefs };
-    });
-    event.target.value = '';
-  };
-
-  const removeAdditionalAsset = (slotId, index) => {
-    setAdditionalAssetRefs(prev => {
-      const newRefs = [...(prev[slotId] || [])];
-      newRefs.splice(index, 1); return { ...prev, [slotId]: newRefs };
-    });
-  };
-
-  const updateAdditionalAssetLabel = (slotId, index, newValue) => {
-    setAdditionalAssetRefs(prev => {
-      const newRefs = [...(prev[slotId] || [])];
-      newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [slotId]: newRefs };
-    });
-  };
-
-  const handleLocalFaceUpload = async (shotIndex, event) => {
-    const files = Array.from(event.target.files);
-    if (!files.length) return;
-    const readAsDataURL = (file) => new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type, partLabel: 'Local Override' });
-      reader.readAsDataURL(file);
-    });
-    const processedFiles = await Promise.all(files.map(readAsDataURL));
-    
-    setStoryboard(prev => {
-      const newBoard = [...prev]; const shot = newBoard[shotIndex];
-      let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
-      currentRefs = [...currentRefs, ...processedFiles].slice(0, 5); 
-      
-      newBoard[shotIndex] = {
-        ...shot, needsFaceReference: true, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null,
-        faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null,
-      };
-      return newBoard;
-    });
-    event.target.value = '';
-  };
-
-  const removeLocalFace = (shotIndex, refIndex) => {
-    setStoryboard(prev => {
-      const newBoard = [...prev]; const shot = newBoard[shotIndex];
-      let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
-      currentRefs.splice(refIndex, 1);
-      newBoard[shotIndex] = {
-        ...shot, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null,
-        faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null,
-      };
-      return newBoard;
-    });
-  };
-
-  const handleGhostToggle = (ghostKey) => {
-    setSelectedGhosts(prev => prev.includes(ghostKey) ? prev.filter(g => g !== ghostKey) : [...prev, ghostKey]);
-  };
-
-  const handleImagePromptManualEdit = (index, value) => {
-    setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], imagePrompt: value }; return arr; });
-  };
-
-  const handleMotionPromptManualEdit = (index, value) => {
-    setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], motionPrompt: value }; return arr; });
-  };
-
-  const handleVideoEngineChange = (index, value) => {
-    setVideoEngines(prev => ({ ...prev, [index]: value }));
-  };
-
-  const generateStoryboard = async () => {
-    if (!idea.trim()) return setError("Silakan masukkan ide adegan terlebih dahulu brow!");
-    setError(""); setIsGeneratingStoryboard(true);
-
-    let charInstruction = "";
-    if (characterCount === "1") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 1 main character (A). Explicitly define their GENDER, age, and distinct outfit. A is always A.`;
-    else if (characterCount === "2") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 2 main characters (A and B). Explicitly define their GENDERS and distinct outfits. NEVER swap their identities.`;
-    else charInstruction = `STRICT CHARACTER DEFINITION: Analyze main characters (max 5). Assign identifiers: A, B, C, D, E. Explicitly define GENDERS and distinct outfits. NEVER mix up genders.`;
-
-    let alternatingInstruction = "";
-    if (isAlternatingCharacters && characterCount !== "1") {
-      alternatingInstruction = `3. STRICT ALTERNATING & INSERT SHOTS: 
-       - Explicitly alternate focus (Shot 1: A, Shot 2: B).
-       - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot (e.g., macro shot). Set 'needsFaceReference' false and 'focusedCharacters' [].
-       - MAPPING CRITICAL: Map CORRECTLY in 'focusedCharacters'.`;
-    } else {
-      alternatingInstruction = `3. SHOT VARIETY & INSERT SHOTS: 
-       - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot (e.g., close-up of shoes). Set 'needsFaceReference' false and 'focusedCharacters' [].
-       - MAPPING CRITICAL: Map CORRECTLY in 'focusedCharacters'.`;
-    }
-
-    let partInstruction = partCount === "Otomatis" 
-      ? `Analyze the user's idea and dynamically break down the sequence into an appropriate number of individual shots based on the story's complexity. There is NO maximum limit.` 
-      : `You must break down the sequence into EXACTLY ${partCount} individual shots. DO NOT generate more than ${partCount} shots.`;
-
-    let ghostInstruction = "";
-    if (genre === "Indonesian Horror (Mistik Lokal Nusantara)" && selectedGhosts.length > 0) {
-      const ghostDetails = selectedGhosts.map(g => `${g}: ${GHOST_PROMPTS[g]}`).join("\n");
-      ghostInstruction = `\nCRITICAL INDONESIAN HORROR DIRECTIVE: The user has selected specific local entities for this story. You MUST feature them logically in the storyboard and use these EXACT visual descriptions:\n${ghostDetails}\n`;
-    }
-
-    const systemPrompt = `You are a WORLD-CLASS, OSCAR-WINNING cinematic director and master visual storyteller. The user will provide a scene idea and a chosen genre: "${genre}".
-    Your primary goal is to craft a storyline with FLAWLESS LOGIC, gripping pacing, and a clear cause-and-effect narrative progression. Every single shot must logically connect to the next.
-
-    STORYTELLING, LOGIC & CINEMATOGRAPHY DIRECTIVE:
-    1. Cause and Effect: Action A must lead logically to Reaction B.
-    2. Cinematic Pacing: Build tension naturally. Use establishing shots, medium shots, and close-ups intelligently.
-    3. Spatial Geography: Maintain a logical understanding of where characters are positioned relative to each other.
-    4. Insert Shots (B-Roll): An Oscar-winning director knows that not every shot shows a face. You MUST use insert shots (e.g., macro shot of boots stepping on a puddle, a ticking clock) to build atmosphere without showing the character's faces.
-    ${ghostInstruction}
-
-    You MUST strictly adhere to the visual aesthetic, lighting, and mood of the "${genre}" genre.
-    
-    CRITICAL CONSISTENCY DIRECTIVE (MANDATORY FOR AI IMAGE STABILITY):
-    1. MASTER ENVIRONMENT: Define the specific location, lighting, and weather ONCE. You MUST reuse these EXACT words in every single shot that takes place in this location.
-    2. MASTER CHARACTER(S): Define Character A (and B, C...) with exact gender, age, ethnicity, facial features, hair, and clothing. You MUST reuse this EXACT word-for-word description in EVERY shot they appear in.
-    ${alternatingInstruction}
-    
-    ULTRA-REALISM DIRECTIVE:
-    Make the imagePrompt EXTREMELY detailed. Include cinematic lighting like "dramatic rim lighting", "shallow depth of field with bokeh background".
-
-    ${charInstruction}
-    ${partInstruction} 
-    
-    For each shot, provide:
-    1. shotNumber: e.g., "SCENE 1", "SCENE 2"
-    2. timecode: Estimate the timecode range.
-    3. needsFaceReference: BOOLEAN. (MUST BE false for Insert/Environment shots).
-    4. focusedCharacters: ARRAY of STRINGS (e.g., ["A", "B"], ["A"], or [] for insert shots).
-    5. hasFemaleCharacter: BOOLEAN.
-    6. imagePrompt: Single, highly detailed paragraph. MUST include the Master Character/Environment strings.
-
-[IF needsFaceReference IS true, START EXACTLY WITH THIS LINE]:
-**Kunci Wajah Aktif**: Wajah subjek HARUS identik dengan foto referensi. Pertahankan semua fitur wajah asli tanpa perubahan.
-
-[ENGLISH DESCRIPTION FORMAT]:
-IF CHARACTERS ARE VISIBLE:
-[Shot type and camera angle]. [MASTER CHARACTER STRING]. [Describe specific action or pose]. The setting is [MASTER ENVIRONMENT STRING: EXACT identical location]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
-
-IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
-[Shot type: EXTREME CLOSE UP / WIDE ESTABLISHING]. [Describe the specific object]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
-
-    7. motionPrompt: A highly detailed motion prompt. Follow the exact structure below. 
-
-    **EXACT FORMAT FOR motionPrompt (preserve all empty lines):**
-    Cinematic sequence with strict ${genre} aesthetic and lighting.
-
-    [If needsFaceReference is true]: LIVE-ACTION REAL HUMAN. [Describe focused Character(s)].
-    [If needsFaceReference is false]: LIVE-ACTION REAL HUMAN (NO FACE IN FRAME). [Describe action or object].
-
-    [If character visible]: Character outfit is [Describe Outfit matching the ${genre}].
-
-    Shot [Number] ([Type], [Timecode]):
-    [Action]
-
-    [Insert Film look matching ${genre}].
-    Heavy grain.
-    Natural particle physics V1.02.
-    Premium cinematic motion blur.`;
-
-    const payload = {
-      contents: [{ parts: [{ text: `Genre: ${genre}\nOriginal Idea: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION FROM USER: ${sceneRevision} (You MUST integrate this revision logically into the new storyboard sequence.)\n` : ''}Required Parts: ${partCount === "Otomatis" ? "Auto" : partCount}` }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: { 
-              shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
-              focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
-              imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
-            },
-            required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
-          }
-        }
-      }
-    };
-
-    try {
-      // Endpoint Vercel Backend untuk Text (Ubah ini jika kamu run lokal di Vercel CLI / Vercel Web)
-      const url = '/api/generate-text'; 
-      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (textResponse) {
-        const parsed = JSON.parse(textResponse);
-        const initializedStoryboard = parsed.map(shot => {
-          let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
-          if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
-            let allRefs = [];
-            shot.focusedCharacters.forEach(charId => {
-              if (globalFaceRefs[charId]) {
-                allRefs = [...allRefs, ...globalFaceRefs[charId].map(ref => ({...ref, partLabel: `@CHAR ${charId}`}))];
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Storyboard Cinematic</title>
+    <!-- Tailwind CSS (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Babel (Untuk menerjemahkan React JSX langsung di Browser) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-black text-white selection:bg-[#FFC000]/30 overflow-x-hidden">
+    <!-- Tempat Aplikasi React akan muncul -->
+    <div id="root"></div>
+
+    <!-- Kode Utama Aplikasi -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js';
+        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from 'https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js';
+
+        // === KAMUS VISUAL HANTU LOKAL (MISTIK NUSANTARA) ===
+        const GHOST_PROMPTS = {
+          "Pocong": "A terrifying figure wrapped tightly in a dirty, soil-stained white burial shroud (kain kafan), tied at the head, neck, and feet. Its face is decaying, dark, with glowing hollow eyes.",
+          "Kuntilanak": "A ghastly female spirit with long, disheveled black hair covering parts of her pale, decaying face. She wears a long, tattered, dirty white dress covered in faint bloodstains.",
+          "Genderuwo": "A massive, towering humanoid creature covered in thick, dark, matted hair. It has glowing red eyes, sharp fangs protruding from its mouth, and long sharp claws.",
+          "Tuyul": "A small, pale, child-like entity with a completely bald head. Its skin is slightly translucent and grayish, wearing only a small, dirty loincloth.",
+          "Sundel Bolong": "A horrifying female spirit similar to Kuntilanak, wearing a long white dress, but with a massive, gory, gaping hole in her back revealing her decaying internal organs and spine.",
+          "Kuyang": "A terrifying female vampire appearing as a floating human head with dangling, pulsating veins, lungs, and stomach, glowing with a faint eerie red light.",
+          "Leak Bali": "A terrifying Balinese black magic practitioner manifesting as a floating severed head with glowing eyes, huge sharp fangs, and a long tongue, with internal organs trailing beneath it.",
+          "Wewe Gombel": "An old, terrifying hag with long, disheveled hair, extremely long and sagging breasts that reach her stomach, wearing tattered traditional clothing.",
+          "Jelangkung": "A creepy, traditional Indonesian spirit-summoning doll made from a coconut shell head and wooden cross stick body, draped in small, dirty, tattered doll clothes.",
+          "Banaspati": "A terrifying, floating ball of aggressive, cursed fire that burns with unnatural dark orange and crimson flames, sometimes briefly revealing a screaming, demonic skull inside.",
+          "Jenglot": "A tiny, terrifying mummified humanoid creature with long, unkempt black hair, sharp fangs protruding from a tiny decaying mouth, and incredibly long, sharp fingernails.",
+          "Babi Ngepet": "A monstrous, demonic boar with glowing red eyes, covered in unnatural dark, bristly fur, emanating a dark aura, associated with dark magic and greed."
+        };
+
+        // === HELPER UNTUK INDEXEDDB ===
+        const DB_NAME = 'AilabsDB';
+        const STORE_NAME = 'projects';
+
+        const initDB = () => {
+          return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = (event) => {
+              const db = event.target.result;
+              if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
               }
-            });
-            allRefs.slice(0, 5).forEach((ref, i) => { newShot[`faceReference${i + 1}`] = ref; });
-          }
-          return newShot;
-        });
-        setStoryboard(initializedStoryboard);
-      } else throw new Error("Respons teks kosong");
-    } catch (err) { setError(`Gagal menghasilkan prompt. Detail: ${err.message}`); } 
-    finally { setIsGeneratingStoryboard(false); }
-  };
-
-  const extendStoryboard = async () => {
-    if (storyboard.length === 0) return setError("Silakan generate adegan awal terlebih dahulu brow!");
-    setError(""); setIsExtendingStoryboard(true);
-
-    let charInstruction = "";
-    if (characterCount === "1") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 1 main character (A). Maintain their precise GENDER and outfit.`;
-    else if (characterCount === "2") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 2 main characters (A and B). Maintain precise GENDERS and outfits.`;
-    else charInstruction = `STRICT CHARACTER DEFINITION: Maintain established characters (A, B, C, D, E) with precise GENDERS and outfits.`;
-
-    let alternatingInstruction = "";
-    if (isAlternatingCharacters && characterCount !== "1") {
-      alternatingInstruction = `3. STRICT ALTERNATING & INSERT SHOTS: 
-       - Explicitly alternate focus (Shot 1: A, Shot 2: B).
-       - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot.`;
-    } else {
-      alternatingInstruction = `3. SHOT VARIETY & INSERT SHOTS: 
-       - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot.`;
-    }
-
-    const prevContext = storyboard.map((s, i) => `Part ${i+1} Image Prompt: ${s.imagePrompt}`).join("\n");
-    const currentPartNumber = storyboard.length + 1;
-
-    let ghostInstruction = "";
-    if (genre === "Indonesian Horror (Mistik Lokal Nusantara)" && selectedGhosts.length > 0) {
-      const ghostDetails = selectedGhosts.map(g => `${g}: ${GHOST_PROMPTS[g]}`).join("\n");
-      ghostInstruction = `\nCRITICAL INDONESIAN HORROR DIRECTIVE: Maintain the appearance of the selected local entities using these EXACT visual descriptions:\n${ghostDetails}\n`;
-    }
-
-    const systemPrompt = `You are a WORLD-CLASS, OSCAR-WINNING cinematic director and master visual storyteller. The user wants to EXTEND an existing storyboard for the genre: "${genre}".
-    
-    PREVIOUS STORY CONTEXT:
-    ${prevContext}
-
-    STORYTELLING, LOGIC & CINEMATOGRAPHY DIRECTIVE:
-    1. Flawless Continuity: The continuation MUST logically follow the exact events and physical locations.
-    2. Cause and Effect: Action A must lead logically to Reaction B.
-    3. Insert Shots (B-Roll): MUST use insert shots to build atmosphere.
-    ${ghostInstruction}
-    
-    CRITICAL CONSISTENCY DIRECTIVE:
-    1. MASTER ENVIRONMENT: Keep location consistent. Reuse EXACT words.
-    2. MASTER CHARACTER(S): Reuse EXACT word-for-word description for characters.
-    ${alternatingInstruction}
-    
-    ULTRA-REALISM DIRECTIVE:
-    Make the imagePrompt EXTREMELY detailed. Include cinematic lighting.
-
-    ${charInstruction}
-    
-    You must generate exactly ${extendPartCount} NEW individual shots to continue the story. Start numbering from SCENE ${currentPartNumber}.
-    
-    For each shot, provide:
-    1. shotNumber: e.g., "SCENE ${currentPartNumber}"
-    2. timecode: Estimate the timecode range.
-    3. needsFaceReference: BOOLEAN.
-    4. focusedCharacters: ARRAY of STRINGS.
-    5. hasFemaleCharacter: BOOLEAN.
-    6. imagePrompt: Single, highly detailed paragraph.
-
-    [IF needsFaceReference IS true, START EXACTLY WITH THIS LINE]:
-    **Kunci Wajah Aktif**: Wajah subjek HARUS identik dengan foto referensi. Pertahankan semua fitur wajah asli tanpa perubahan.
-
-    [ENGLISH DESCRIPTION FORMAT]:
-    IF CHARACTERS ARE VISIBLE:
-    [Shot type and camera angle]. [MASTER CHARACTER STRING]. [Describe specific action]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
-
-    IF NO CHARACTERS ARE VISIBLE:
-    [Shot type]. [Describe the specific object/action]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
-
-    7. motionPrompt: A highly detailed motion prompt. Follow the exact structure below. 
-
-    **EXACT FORMAT FOR motionPrompt (preserve all empty lines):**
-    Cinematic sequence with strict ${genre} aesthetic and lighting.
-
-    [If needsFaceReference is true]: LIVE-ACTION REAL HUMAN. [Describe focused Character(s)].
-    [If needsFaceReference is false]: LIVE-ACTION REAL HUMAN (NO FACE IN FRAME). [Describe action or object].
-
-    [If character visible]: Character outfit is [Describe Outfit matching the ${genre}].
-
-    Shot [Number] ([Type], [Timecode]):
-    [Action]
-
-    [Insert Film look matching ${genre}].
-    Heavy grain.
-    Natural particle physics V1.02.
-    Premium cinematic motion blur.`;
-
-    const payload = {
-      contents: [{ parts: [{ text: `Genre: ${genre}\nIdea Continuation: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION: ${sceneRevision}\n` : ''}Required New Parts: ${extendPartCount}` }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: { 
-              shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
-              focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
-              imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
-            },
-            required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
-          }
-        }
-      }
-    };
-
-    try {
-      // Endpoint Vercel Backend untuk Text
-      const url = '/api/generate-text'; 
-      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (textResponse) {
-        const parsed = JSON.parse(textResponse);
-        const initializedStoryboard = parsed.map(shot => {
-          let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
-          if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
-            let allRefs = [];
-            shot.focusedCharacters.forEach(charId => {
-              if (globalFaceRefs[charId]) {
-                allRefs = [...allRefs, ...globalFaceRefs[charId].map(ref => ({...ref, partLabel: `@CHAR ${charId}`}))];
-              }
-            });
-            allRefs.slice(0, 5).forEach((ref, i) => { newShot[`faceReference${i + 1}`] = ref; });
-          }
-          return newShot;
-        });
-        setStoryboard(prev => [...prev, ...initializedStoryboard]);
-      } else throw new Error("Respons teks kosong");
-    } catch (err) { setError(`Gagal memperpanjang cerita. Detail: ${err.message}`); } 
-    finally { setIsExtendingStoryboard(false); }
-  };
-
-  const generateImage = async (index, overriddenShot = null) => {
-    const shot = overriddenShot || storyboard[index];
-    setError(""); setGeneratingImages(prev => ({ ...prev, [index]: true }));
-
-    try {
-      const femaleEnhancer = shot.hasFemaleCharacter ? " Female subject(s) must have ultra-realistic, natural, emotional features. " : "";
-      const realismEnhancer = " Shot on ARRI Alexa 65, 50mm f/1.4 lens. RAW ultra-photorealistic cinematic still. Gritty realism: highly detailed natural skin texture, visible pores, subtle sweat, dirt/grime smudges. Dramatic cinematic lighting: stark chiaroscuro, striking rim light (fireglow/neon), deep shadows. Shallow depth of field, heavily blurred background (beautiful bokeh). Masterpiece, lifelike, highly detailed real-world photography. ";
-      const antiCgiAddon = " STRICTLY FORBIDDEN: CGI, 3D render, Unreal Engine, cartoon, anime, illustration, painting, smooth plastic skin, airbrushed, unnatural proportions, deformed, mutated, AI artifacts. MUST look exactly like a real photograph from a high-budget Hollywood movie set. ";
-      
-      const revisionText = imageRevisionInputs[index] ? ` \n[MANDATORY USER REVISION/OVERRIDE: ${imageRevisionInputs[index]}] ` : "";
-
-      let ghostRealismAddon = "";
-      if (genre === "Indonesian Horror (Mistik Lokal Nusantara)" && selectedGhosts.length > 0) {
-        const ghostDetails = selectedGhosts.map(g => `${g}: ${GHOST_PROMPTS[g]}`).join(" | ");
-        ghostRealismAddon = ` \n[MANDATORY GHOST DESIGN REFERENCE: If the prompt includes these entities, strictly follow their design: ${ghostDetails}] `;
-      }
-
-      const finalImagePrompt = `[CINEMATIC GENRE: ${genre}] [CONSISTENT SCENE STRICT ENFORCEMENT] ${shot.imagePrompt} ${revisionText} ${ghostRealismAddon} ${femaleEnhancer} ${realismEnhancer} ${antiCgiAddon} EXTREMELY IMPORTANT: The output image MUST be exactly in ${aspectRatio} aspect ratio format.`;
-
-      const hasFaceRef = shot.faceReference1 || shot.faceReference2 || shot.faceReference3 || shot.faceReference4 || shot.faceReference5;
-      
-      // Endpoint Vercel Backend untuk Image
-      const url = '/api/generate-image'; 
-      const apiParts = [];
-
-      let baseText = "";
-      if (shot.needsFaceReference && hasFaceRef) {
-        baseText = `Create an ULTRA-REALISTIC live-action photograph. STRICTLY PRESERVE the exact face identity, gender, and facial structure from the reference images. To maintain consistency across shots, the character's clothing and the background environment MUST perfectly match the prompt description. Must NOT look like CGI or 3D. Prompt: ${finalImagePrompt}`;
-      } else {
-        baseText = `Create an ULTRA-REALISTIC live-action photograph. Ensure the environment, lighting, and clothing EXACTLY match the description to maintain consistency. Must NOT look like CGI or 3D. Prompt: ${finalImagePrompt}`;
-      }
-
-      apiParts.push({ text: baseText });
-
-      if (shot.needsFaceReference && hasFaceRef) {
-        if (shot.faceReference1) apiParts.push({ inlineData: { mimeType: shot.faceReference1.mimeType, data: shot.faceReference1.base64 } });
-        if (shot.faceReference2) apiParts.push({ inlineData: { mimeType: shot.faceReference2.mimeType, data: shot.faceReference2.base64 } });
-        if (shot.faceReference3) apiParts.push({ inlineData: { mimeType: shot.faceReference3.mimeType, data: shot.faceReference3.base64 } });
-        if (shot.faceReference4) apiParts.push({ inlineData: { mimeType: shot.faceReference4.mimeType, data: shot.faceReference4.base64 } });
-        if (shot.faceReference5) apiParts.push({ inlineData: { mimeType: shot.faceReference5.mimeType, data: shot.faceReference5.base64 } });
-      }
-
-      // --- INJEKSI ASET TAMBAHAN (PRODUK/LOKASI/PROPERTI) ---
-      let hasAdditionalAssets = false;
-      const additionalAssetTexts = [];
-      Object.keys(additionalAssetRefs).forEach(slotId => {
-        if (additionalAssetRefs[slotId] && additionalAssetRefs[slotId].length > 0) {
-          hasAdditionalAssets = true;
-          additionalAssetRefs[slotId].forEach(ref => {
-            const label = ref.partLabel || `Asset ${slotId}`;
-            additionalAssetTexts.push(`MANDATORY REFERENCE INCLUSION: You MUST seamlessly integrate "${label}" into the scene based on this provided image. It should look natural within the ${genre} environment.`);
-            apiParts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
           });
-        }
-      });
+        };
 
-      if (hasAdditionalAssets) {
-          apiParts[0].text += ` \n\n${additionalAssetTexts.join("\n")}`;
-      }
+        const saveToIDB = async (key, data) => {
+          try {
+            const db = await initDB();
+            return new Promise((resolve, reject) => {
+              const transaction = db.transaction(STORE_NAME, 'readwrite');
+              const store = transaction.objectStore(STORE_NAME);
+              const request = store.put(data, key);
+              request.onsuccess = () => resolve();
+              request.onerror = () => reject(request.error);
+            });
+          } catch (err) { console.error("IDB Save Error:", err); }
+        };
 
-      const payload = { contents: [{ parts: apiParts }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } };
-      const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const getFromIDB = async (key) => {
+          try {
+            const db = await initDB();
+            return new Promise((resolve, reject) => {
+              const transaction = db.transaction(STORE_NAME, 'readonly');
+              const store = transaction.objectStore(STORE_NAME);
+              const request = store.get(key);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          } catch (err) { return null; }
+        };
 
-      if (result.error) throw new Error(result.error.message || "API Error");
-      const base64Image = result.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+        const compressImageBase64 = (base64Str, maxWidth = 150) => {
+          return new Promise((resolve) => {
+            if (!base64Str) { resolve(null); return; }
+            const img = new Image();
+            img.src = base64Str;
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              const scaleSize = maxWidth / img.width;
+              canvas.width = maxWidth; canvas.height = img.height * scaleSize;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.3));
+            };
+            img.onerror = () => resolve(null);
+          });
+        };
 
-      if (base64Image) {
-        setStoryboard(prev => { const newBoard = [...prev]; newBoard[index] = { ...newBoard[index], imageUrl: `data:image/png;base64,${base64Image}` }; return newBoard; });
-      } else throw new Error("Tidak ada data gambar");
-    } catch (err) { setError(`Gagal merender gambar. Detail: ${err.message}`); } 
-    finally { setGeneratingImages(prev => ({ ...prev, [index]: false })); }
-  };
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwgYCCYXKE1RPLdUCeq3Lv7rqGaOPkl19P9LmsiXDFuAWNpgtlHI2-NWoJ85v10QuDVOw/exec";
 
-  // --- FUNGSI GENERATE VIDEO BARU ---
-  const generateVideo = async (index) => {
-    const shot = storyboard[index];
-    if (!shot.imageUrl) return setError("Generate gambar dulu sebelum video brow!");
-    
-    const engine = videoEngines[index] || "Veo3 Lite"; // Default engine
-
-    setError("");
-    setGeneratingVideos(prev => ({ ...prev, [index]: true }));
-
-    try {
-      // Panggil backend Vercel kita untuk Video
-      const response = await fetch('/api/generate-video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: shot.imageUrl, // Gambar hasil render sebelumnya sebagai frame awal
-          motionPrompt: shot.motionPrompt,
-          engine: engine
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || "Gagal menghubungi Video Server");
-      }
-
-      // Mengekstrak hasil video dari Google API (biasanya berupa base64 mp4 atau URI)
-      let finalVideoUrl = "";
-      
-      const part = result.candidates?.[0]?.content?.parts?.[0];
-      if (part?.inlineData) {
-        // Jika API mengembalikan raw base64 data
-        finalVideoUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-      } else if (part?.fileData?.fileUri) {
-        // Jika API mengembalikan URL Cloud Storage (Sering terjadi untuk file besar)
-        finalVideoUrl = part.fileData.fileUri;
-      } else {
-        throw new Error("API tidak mengembalikan data video yang valid.");
-      }
-
-      setStoryboard(prev => {
-        const newBoard = [...prev];
-        newBoard[index] = { ...newBoard[index], videoUrl: finalVideoUrl };
-        return newBoard;
-      });
-      // Otomatis switch preview ke video setelah selesai generate
-      setShowVideoPreview(prev => ({ ...prev, [index]: true }));
-
-    } catch (err) {
-      setError(`Gagal merender video. Detail: ${err.message}`);
-    } finally {
-      setGeneratingVideos(prev => ({ ...prev, [index]: false }));
-    }
-  };
-
-  const generateAllImages = async () => {
-    if (storyboard.length === 0) return;
-    setIsGeneratingAllImages(true);
-    for (let i = 0; i < storyboard.length; i++) {
-      await generateImage(i);
-      if (i < storyboard.length - 1) await new Promise(resolve => setTimeout(resolve, 4000));
-    }
-    setIsGeneratingAllImages(false);
-  };
-
-  const downloadImage = (imageUrl, fileName) => {
-    const link = document.createElement('a');
-    link.href = imageUrl; link.download = fileName;
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  };
-
-  const downloadVideo = (videoUrl, fileName) => {
-    const link = document.createElement('a');
-    link.href = videoUrl; link.download = fileName;
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  };
-
-  const handleCopy = (text, key) => {
-    const textArea = document.createElement("textarea");
-    textArea.value = text; document.body.appendChild(textArea); textArea.select();
-    document.execCommand('copy'); document.body.removeChild(textArea);
-    
-    setCopiedStates(prev => ({ ...prev, [key]: true }));
-    setTimeout(() => { setCopiedStates(prev => ({ ...prev, [key]: false })); }, 2000);
-  };
-
-  if (!isLoggedIn || !hasAccess) {
-    return (
-      <div className="min-h-screen bg-black text-gray-200 font-sans selection:bg-[#FFC000]/30 flex items-center justify-center relative overflow-hidden">
-        <div className="relative z-10 bg-[#0a0a0a] border border-white/20 rounded-xl p-8 md:p-10 shadow-2xl w-[90%] max-w-md overflow-hidden">
-          <div className="flex flex-col items-center mb-8 relative z-10">
-            <img src={bangProLogoUrl} alt="Bang Pro" className="h-16 mb-4 object-contain" />
-            <h1 className="text-2xl font-black text-white tracking-widest text-center uppercase">
-              AI STORYBOARD <br/><span className="text-[#FFC000]">CINEMATIC ACTION</span>
-            </h1>
-          </div>
-          <form onSubmit={handleLogin} className="relative z-10 flex flex-col gap-5">
-            <div>
-              <label className="block text-xs text-gray-400 mb-2 font-medium tracking-wider">EMAIL TERDAFTAR</label>
-              <input 
-                type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="contoh@gmail.com" disabled={isCheckingAccess}
-                className="w-full bg-[#111] border border-white/20 focus:border-[#FFC000] rounded p-3 text-sm text-white focus:outline-none transition-all" required
-              />
-            </div>
-            {loginError && <div className="text-red-500 text-xs p-3 border border-red-500/30 rounded bg-red-900/20">{loginError}</div>}
-            <button type="submit" disabled={isCheckingAccess} className="w-full bg-[#E50914] hover:bg-red-700 text-white font-bold rounded py-3 transition-all text-sm tracking-widest border border-red-600 disabled:opacity-50 uppercase">
-              {isCheckingAccess ? "MENGECEK AKSES..." : "MASUK APLIKASI"}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-[#000000] text-gray-200 font-sans selection:bg-[#FFC000]/30 overflow-x-hidden relative">
-      <nav className="bg-[#000] border-b border-white/10 flex justify-between items-center px-4 py-2">
-         <div className="flex items-center gap-2">
-            <button onClick={() => setIsHistoryOpen(true)} className="text-[#FFC000] border border-[#FFC000]/30 hover:bg-[#FFC000]/10 px-3 py-1 rounded text-[10px] font-bold tracking-widest uppercase transition-all">
-              Histori Proyek
-            </button>
-         </div>
-         <div className="flex items-center gap-3">
-            <div className="text-right">
-              <div className="text-[10px] font-bold text-white uppercase">{activeUsername}</div>
-              <div className="text-[9px] text-gray-400">{activeEmail}</div>
-            </div>
-            <button onClick={handleLogout} className="text-red-500 hover:text-white text-[10px] font-bold uppercase border border-red-500/30 px-2 py-1 rounded">Keluar</button>
-         </div>
-      </nav>
-
-      <header className="bg-[#000] border-b border-white/20 px-4 md:px-8 py-6 flex flex-col md:flex-row justify-between items-start md:items-end w-full">
-         <div className="flex flex-col items-start mb-4 md:mb-0">
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-white tracking-tighter uppercase leading-none">AI STORYBOARD</h1>
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-black text-[#FFC000] tracking-tighter uppercase leading-none">CINEMATIC ACTION</h2>
-            <p className="mt-3 text-[11px] md:text-[14px] font-medium text-gray-300 tracking-[0.3em] uppercase flex items-center">
-              STORYBOARD <span className="mx-2 text-white">→</span> SHOT <span className="mx-2 text-white">→</span> VIDEO RESULT
-            </p>
-         </div>
-         <div className="flex flex-col items-end">
-            <div className="bg-white px-1 py-1 rounded-sm border border-gray-800 flex flex-col items-center">
-               <img src={bangProLogoUrl} alt="Bang Pro" className="h-12 md:h-16 object-contain" />
-            </div>
-         </div>
-      </header>
-
-      <main className="max-w-full mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10 bg-[#000]">
+        // === FIREBASE INIT SETUP AMAN ===
+        let app, auth, db;
+        try {
+            let firebaseConfig;
+            // Gunakan fallback jika tidak ada injected config (Misal sedang jalan di Vercel)
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } else {
+                // TODO: Jika kamu mau fitur Cloud Save (Histori) jalan di Vercel, 
+                // masukkan config dari Firebase Console kamu di sini:
+                firebaseConfig = {
+                    apiKey: "YOUR_API_KEY_HERE",
+                    authDomain: "your-app.firebaseapp.com",
+                    projectId: "your-project-id",
+                    storageBucket: "your-app.appspot.com",
+                    messagingSenderId: "123456789",
+                    appId: "1:1234567:web:abcdef"
+                };
+            }
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch(e) { console.warn("Firebase belum disetting dengan benar, fitur cloud akan dinonaktifkan.", e); }
         
-        {/* KOLOM KIRI: KONFIGURASI ADEGAN */}
-        <div className="lg:col-span-3 space-y-4">
-          <div className="bg-[#050505] border border-white/20 rounded p-5 sticky top-6">
-            <h2 className="text-[12px] font-bold text-white mb-5 uppercase tracking-widest border-b border-white/10 pb-2">
-              Konfigurasi Adegan
-            </h2>
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        const App = () => {
+          const [loginEmail, setLoginEmail] = useState("");
+          const [isLoggedIn, setIsLoggedIn] = useState(false);
+          const [hasAccess, setHasAccess] = useState(false);
+          const [isCheckingAccess, setIsCheckingAccess] = useState(false);
+          const [loginError, setLoginError] = useState("");
+          const [activeUsername, setActiveUsername] = useState("");
+          const [activeEmail, setActiveEmail] = useState("");
+
+          const [idea, setIdea] = useState("");
+          const [sceneRevision, setSceneRevision] = useState("");
+          const [genre, setGenre] = useState("Action High-Octane");
+          const [characterCount, setCharacterCount] = useState("Otomatis"); 
+          const [isAlternatingCharacters, setIsAlternatingCharacters] = useState(false);
+          const [partCount, setPartCount] = useState("Otomatis"); 
+          const [aspectRatio, setAspectRatio] = useState("16:9"); 
+          const [storyboard, setStoryboard] = useState([]);
+          
+          const [globalFaceRefs, setGlobalFaceRefs] = useState({ A: [], B: [], C: [], D: [], E: [] });
+          const [additionalAssetRefs, setAdditionalAssetRefs] = useState({ 1: [], 2: [], 3: [], 4: [], 5: [] });
+          const [selectedGhosts, setSelectedGhosts] = useState([]);
+
+          const [isGeneratingStoryboard, setIsGeneratingStoryboard] = useState(false);
+          const [isExtendingStoryboard, setIsExtendingStoryboard] = useState(false); 
+          const [extendPartCount, setExtendPartCount] = useState(2); 
+          const [generatingImages, setGeneratingImages] = useState({}); 
+          const [generatingVideos, setGeneratingVideos] = useState({});
+          const [videoEngines, setVideoEngines] = useState({}); 
+          
+          const [isGeneratingAllImages, setIsGeneratingAllImages] = useState(false);
+          const [imageRevisionInputs, setImageRevisionInputs] = useState({});
+          const [motionRevisionInputs, setMotionRevisionInputs] = useState({});
+
+          const [previewImage, setPreviewImage] = useState(null);
+          const [previewVideo, setPreviewVideo] = useState(null); 
+          const [error, setError] = useState("");
+
+          const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+          const [projectHistory, setProjectHistory] = useState([]);
+          const [historySuccessMsg, setHistorySuccessMsg] = useState("");
+
+          const [copiedStates, setCopiedStates] = useState({});
+          const [showVideoPreview, setShowVideoPreview] = useState({});
+          const [user, setUser] = useState(null);
+
+          const bangProLogoUrl = "https://i.ibb.co.com/pvp9g29x/Whats-App-Image-2025-12-25-at-02-28-36.jpg"; 
+
+          useEffect(() => {
+            const initAuth = async () => {
+              if(!auth) return; // Skip if Firebase is not setup
+              try {
+                  if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                  } else {
+                    await signInAnonymously(auth);
+                  }
+              } catch(e) {}
+            };
+            initAuth();
+            if(auth) {
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }
+          }, []);
+
+          useEffect(() => {
+            const savedSession = localStorage.getItem("ailabs_session");
+            if (savedSession) {
+              try {
+                const parsed = JSON.parse(savedSession);
+                if (parsed && parsed.email) {
+                  setLoginEmail(parsed.email); setActiveEmail(parsed.email); setActiveUsername(parsed.username);
+                  setIsLoggedIn(true); setHasAccess(true);
+                }
+              } catch (e) { console.error(e); }
+            }
+          }, []);
+
+          useEffect(() => {
+            const loadDraft = async () => {
+              const parsed = await getFromIDB("ailabs_project_draft");
+              if (parsed) {
+                if (parsed.idea) setIdea(parsed.idea);
+                if (parsed.sceneRevision) setSceneRevision(parsed.sceneRevision);
+                if (parsed.genre) setGenre(parsed.genre);
+                if (parsed.characterCount) setCharacterCount(parsed.characterCount);
+                if (parsed.isAlternatingCharacters !== undefined) setIsAlternatingCharacters(parsed.isAlternatingCharacters);
+                if (parsed.partCount) setPartCount(parsed.partCount);
+                if (parsed.aspectRatio) setAspectRatio(parsed.aspectRatio);
+                if (parsed.storyboard) setStoryboard(parsed.storyboard);
+                if (parsed.selectedGhosts) setSelectedGhosts(parsed.selectedGhosts);
+                if (parsed.globalFaceRefs) setGlobalFaceRefs(parsed.globalFaceRefs);
+                if (parsed.additionalAssetRefs) setAdditionalAssetRefs(parsed.additionalAssetRefs);
+                if (parsed.imageRevisionInputs) setImageRevisionInputs(parsed.imageRevisionInputs);
+                if (parsed.motionRevisionInputs) setMotionRevisionInputs(parsed.motionRevisionInputs);
+                if (parsed.videoEngines) setVideoEngines(parsed.videoEngines); 
+              }
+            };
+            loadDraft();
+          }, []);
+
+          useEffect(() => {
+            const projectData = { idea, sceneRevision, genre, characterCount, isAlternatingCharacters, partCount, aspectRatio, storyboard, selectedGhosts, globalFaceRefs, additionalAssetRefs, imageRevisionInputs, motionRevisionInputs, videoEngines };
+            saveToIDB("ailabs_project_draft", projectData);
+          }, [idea, sceneRevision, genre, characterCount, isAlternatingCharacters, partCount, aspectRatio, storyboard, selectedGhosts, globalFaceRefs, additionalAssetRefs, imageRevisionInputs, motionRevisionInputs, videoEngines]);
+
+          useEffect(() => {
+            if (!user || !db) return;
+            const historyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'history');
+            const unsubscribe = onSnapshot(
+              historyRef,
+              (snapshot) => {
+                const historyData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                historyData.sort((a, b) => b.timestamp - a.timestamp);
+                setProjectHistory(historyData);
+              },
+              (error) => console.error("Gagal memuat histori:", error)
+            );
+            return () => unsubscribe();
+          }, [user]);
+
+          const handleLogin = async (e) => {
+            e.preventDefault();
+            if (!loginEmail.trim()) { setLoginError("Masukkan Email Gmail dulu brow!"); return; }
+            setLoginError(""); setIsCheckingAccess(true);
+            try {
+              const response = await fetch(`${GOOGLE_SCRIPT_URL}?email=${encodeURIComponent(loginEmail)}`);
+              const data = await response.json();
+              if (data.success) {
+                setIsLoggedIn(true); setHasAccess(true); setActiveUsername(data.username); setActiveEmail(data.email);
+                localStorage.setItem("ailabs_session", JSON.stringify({ email: data.email, username: data.username }));
+              } else { setLoginError(data.message || "Akses Ditolak! Email tidak cocok."); }
+            } catch (err) { setLoginError("Gagal terhubung ke server database."); } 
+            finally { setIsCheckingAccess(false); }
+          };
+
+          const handleLogout = () => {
+            setIsLoggedIn(false); setHasAccess(false); setLoginEmail(""); setActiveUsername(""); setActiveEmail("");
+            localStorage.removeItem("ailabs_session");
+          };
+
+          const saveToHistory = async () => {
+            if (!user || !db) { setError("Fitur Histori Cloud tidak aktif karena Firebase Config kosong di Vercel."); return; }
+            if (!idea.trim() && storyboard.length === 0) { setError("Isi ide atau buat storyboard dulu."); return; }
+
+            setError(""); setHistorySuccessMsg("Mengompres gambar untuk Cloud... Mohon tunggu.");
+            const safeStoryboard = await Promise.all(storyboard.map(async (s) => {
+              const thumbnail = s.imageUrl ? await compressImageBase64(s.imageUrl, 150) : null;
+              return { shotNumber: s.shotNumber || "Scene", imagePrompt: s.imagePrompt || "", motionPrompt: s.motionPrompt || "", imageUrl: thumbnail, videoUrl: s.videoUrl || null };
+            }));
+
+            const timestamp = Date.now();
+            const historyId = timestamp.toString();
+            const fullEntry = { timestamp, date: new Date().toLocaleString('id-ID'), idea, sceneRevision, genre, partCount, characterCount, aspectRatio, storyboard: safeStoryboard };
+
+            try {
+              const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'history', historyId);
+              await setDoc(docRef, fullEntry);
+              setError(""); setHistorySuccessMsg("Disimpan ke Cloud!");
+              setTimeout(() => setHistorySuccessMsg(""), 4000);
+            } catch (e) { setError("🚨 GAGAL MENYIMPAN KE CLOUD!"); }
+          };
+
+          const loadFromHistory = (entry) => {
+            setIdea(entry.idea || ""); setSceneRevision(entry.sceneRevision || ""); setGenre(entry.genre || "Action High-Octane"); 
+            setCharacterCount(entry.characterCount || "Otomatis"); setPartCount(entry.partCount || 2); setAspectRatio(entry.aspectRatio || "16:9"); 
+            setStoryboard(entry.storyboard || []); setImageRevisionInputs(entry.imageRevisionInputs || {}); setMotionRevisionInputs(entry.motionRevisionInputs || {});
+            setVideoEngines({}); 
+            setIsHistoryOpen(false); setHistorySuccessMsg("Proyek lama berhasil dimuat dari Cloud!"); setTimeout(() => setHistorySuccessMsg(""), 3000);
+          };
+
+          const deleteHistory = async (id) => {
+            if (!user || !db) return;
+            try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', id.toString())); } catch (e) {}
+          };
+
+          const fetchWithRetry = async (url, options, retries = 5) => {
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < retries; i++) {
+              try {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    const errData = await response.json();
+                    throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+                }
+                return await response.json();
+              } catch (err) {
+                if (i === retries - 1) throw err;
+                await new Promise(res => setTimeout(res, delays[i]));
+              }
+            }
+          };
+
+          const handleGlobalFaceUpload = async (char, event) => {
+            const files = Array.from(event.target.files);
+            if (!files.length) return;
+            const readAsDataURL = (file) => new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type });
+              reader.readAsDataURL(file);
+            });
+            const processedFiles = await Promise.all(files.map(readAsDataURL));
+            setGlobalFaceRefs(prev => {
+              const currentRefs = prev[char] || [];
+              const newRefsToAdd = processedFiles.map((file, idx) => ({ ...file, partLabel: `Part ${currentRefs.length + idx + 1}` }));
+              const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
+              return { ...prev, [char]: newRefs };
+            });
+          };
+
+          const removeGlobalFace = (char, index) => { setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs.splice(index, 1); return { ...prev, [char]: newRefs }; }); };
+          const updateGlobalFaceLabel = (char, index, newValue) => { setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [char]: newRefs }; }); };
+
+          const handleAdditionalAssetUpload = async (slotId, event) => {
+            const files = Array.from(event.target.files);
+            if (!files.length) return;
+            const readAsDataURL = (file) => new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type });
+              reader.readAsDataURL(file);
+            });
+            const processedFiles = await Promise.all(files.map(readAsDataURL));
+            setAdditionalAssetRefs(prev => {
+              const currentRefs = prev[slotId] || [];
+              const newRefsToAdd = processedFiles.map((file, idx) => ({ ...file, partLabel: `Aset ${slotId}` }));
+              const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
+              return { ...prev, [slotId]: newRefs };
+            });
+          };
+
+          const removeAdditionalAsset = (slotId, index) => { setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs.splice(index, 1); return { ...prev, [slotId]: newRefs }; }); };
+          const updateAdditionalAssetLabel = (slotId, index, newValue) => { setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [slotId]: newRefs }; }); };
+
+          const handleLocalFaceUpload = async (shotIndex, event) => {
+            const files = Array.from(event.target.files);
+            if (!files.length) return;
+            const readAsDataURL = (file) => new Promise((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve({ fileName: file.name, file: file, previewUrl: reader.result, base64: reader.result.split(',')[1], mimeType: file.type, partLabel: 'Local Override' });
+              reader.readAsDataURL(file);
+            });
+            const processedFiles = await Promise.all(files.map(readAsDataURL));
+            setStoryboard(prev => {
+              const newBoard = [...prev]; const shot = newBoard[shotIndex];
+              let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
+              currentRefs = [...currentRefs, ...processedFiles].slice(0, 5); 
+              newBoard[shotIndex] = { ...shot, needsFaceReference: true, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null, faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null };
+              return newBoard;
+            });
+          };
+
+          const removeLocalFace = (shotIndex, refIndex) => {
+            setStoryboard(prev => {
+              const newBoard = [...prev]; const shot = newBoard[shotIndex];
+              let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
+              currentRefs.splice(refIndex, 1);
+              newBoard[shotIndex] = { ...shot, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null, faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null };
+              return newBoard;
+            });
+          };
+
+          const handleGhostToggle = (ghostKey) => { setSelectedGhosts(prev => prev.includes(ghostKey) ? prev.filter(g => g !== ghostKey) : [...prev, ghostKey]); };
+          const handleImagePromptManualEdit = (index, value) => { setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], imagePrompt: value }; return arr; }); };
+          const handleMotionPromptManualEdit = (index, value) => { setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], motionPrompt: value }; return arr; }); };
+          const handleVideoEngineChange = (index, value) => { setVideoEngines(prev => ({ ...prev, [index]: value })); };
+
+          const getSystemPromptText = () => {
+            let charInstruction = "";
+            if (characterCount === "1") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 1 main character (A). Explicitly define their GENDER, age, and distinct outfit. A is always A.`;
+            else if (characterCount === "2") charInstruction = `STRICT CHARACTER DEFINITION: EXACTLY 2 main characters (A and B). Explicitly define their GENDERS and distinct outfits. NEVER swap their identities.`;
+            else charInstruction = `STRICT CHARACTER DEFINITION: Analyze main characters (max 5). Assign identifiers: A, B, C, D, E. Explicitly define GENDERS and distinct outfits. NEVER mix up genders.`;
+
+            let alternatingInstruction = "";
+            if (isAlternatingCharacters && characterCount !== "1") {
+              alternatingInstruction = `3. STRICT ALTERNATING & INSERT SHOTS: 
+               - Explicitly alternate focus (Shot 1: A, Shot 2: B).
+               - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot (e.g., macro shot). Set 'needsFaceReference' false and 'focusedCharacters' [].
+               - MAPPING CRITICAL: Map CORRECTLY in 'focusedCharacters'.`;
+            } else {
+              alternatingInstruction = `3. SHOT VARIETY & INSERT SHOTS: 
+               - INSERT SHOTS MANDATORY: At least 1 shot per part MUST be an Insert/B-Roll shot (e.g., close-up of shoes). Set 'needsFaceReference' false and 'focusedCharacters' [].
+               - MAPPING CRITICAL: Map CORRECTLY in 'focusedCharacters'.`;
+            }
+
+            let partInstruction = partCount === "Otomatis" 
+              ? `Analyze the user's idea and dynamically break down the sequence into an appropriate number of individual shots based on the story's complexity. There is NO maximum limit.` 
+              : `You must break down the sequence into EXACTLY ${partCount} individual shots. DO NOT generate more than ${partCount} shots.`;
+
+            let ghostInstruction = "";
+            if (genre === "Indonesian Horror (Mistik Lokal Nusantara)" && selectedGhosts.length > 0) {
+              const ghostDetails = selectedGhosts.map(g => `${g}: ${GHOST_PROMPTS[g]}`).join("\n");
+              ghostInstruction = `\nCRITICAL INDONESIAN HORROR DIRECTIVE: The user has selected specific local entities for this story. You MUST feature them logically in the storyboard and use these EXACT visual descriptions:\n${ghostDetails}\n`;
+            }
+
+            return `You are a WORLD-CLASS, OSCAR-WINNING cinematic director and master visual storyteller. The user will provide a scene idea and a chosen genre: "${genre}".
+            Your primary goal is to craft a storyline with FLAWLESS LOGIC, gripping pacing, and a clear cause-and-effect narrative progression. Every single shot must logically connect to the next.
+
+            STORYTELLING, LOGIC & CINEMATOGRAPHY DIRECTIVE:
+            1. Cause and Effect: Action A must lead logically to Reaction B.
+            2. Cinematic Pacing: Build tension naturally. Use establishing shots, medium shots, and close-ups intelligently.
+            3. Spatial Geography: Maintain a logical understanding of where characters are positioned relative to each other.
+            4. Insert Shots (B-Roll): An Oscar-winning director knows that not every shot shows a face. You MUST use insert shots (e.g., macro shot of boots stepping on a puddle, a ticking clock) to build atmosphere without showing the character's faces.
+            ${ghostInstruction}
+
+            You MUST strictly adhere to the visual aesthetic, lighting, and mood of the "${genre}" genre.
             
-            <div className="mb-4">
-              <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Genre Sinematik</label>
-              <select 
-                value={genre} onChange={(e) => setGenre(e.target.value)}
-                className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] transition-all uppercase"
-              >
-                <option value="Action High-Octane">Action High-Octane (Aksi Laga Cepat)</option>
-                <option value="Cyberpunk Noir">Cyberpunk Noir (Masa Depan Neon Gelap)</option>
-                <option value="Sci-Fi Thriller">Sci-Fi Thriller (Fiksi Ilmiah Menegangkan)</option>
-                <option value="Epic Fantasy">Epic Fantasy (Fantasi Epik Kerajaan Sihir)</option>
-                <option value="Horror Suspense">Horror Suspense (Horor Ketegangan Misteri)</option>
-                <option value="Indonesian Horror (Mistik Lokal Nusantara)">Horor Indonesia (Mistik Lokal Nusantara)</option>
-                <option value="Neo-Noir Crime">Neo-Noir Crime (Kriminal Gelap Estetik Modern)</option>
-                <option value="Post-Apocalyptic Survival">Post-Apocalyptic Survival (Bertahan Hidup Pasca Kiamat)</option>
-                <option value="Historical Drama">Historical Drama (Drama Sejarah Klasik)</option>
-                <option value="Western">Western (Koboi Liar Klasik)</option>
-                <option value="Space Opera">Space Opera (Petualangan Luar Angkasa)</option>
-                <option value="Martial Arts / Wuxia">Martial Arts / Wuxia (Seni Bela Diri & Silat)</option>
-                <option value="Steampunk">Steampunk (Masa Lalu Fiksi Mesin Uap)</option>
-                <option value="War Epic">War Epic (Perang Skala Besar / Medan Tempur)</option>
-                <option value="Psychological Thriller">Psychological Thriller (Ketegangan Psikologis)</option>
-                <option value="Emotional Drama / Slice of Life">Emotional Drama / Slice of Life (Drama Emosional Kehidupan)</option>
-                <option value="Romantic Drama">Romantic Drama (Drama Romantis Percintaan)</option>
-              </select>
-            </div>
-
-            <div className="mb-4 grid grid-cols-2 gap-3">
-               <div>
-                  <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Karakter</label>
-                  <select 
-                     value={characterCount} onChange={(e) => setCharacterCount(e.target.value)}
-                     className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
-                  >
-                     <option value="1">1 Karakter</option>
-                     <option value="2">2 Karakter</option>
-                     <option value="Otomatis">Otomatis</option>
-                  </select>
-                  {characterCount !== "1" && (
-                     <div className="mt-2 flex items-center gap-2 px-1">
-                        <input type="checkbox" checked={isAlternatingCharacters} onChange={(e) => setIsAlternatingCharacters(e.target.checked)} className="accent-[#FFC000] w-3 h-3 cursor-pointer" />
-                        <span className="text-[8px] text-gray-400 font-bold uppercase tracking-widest cursor-pointer hover:text-white transition-colors" onClick={() => setIsAlternatingCharacters(!isAlternatingCharacters)}>Fokus Bergantian</span>
-                     </div>
-                  )}
-               </div>
-               <div>
-                  <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Rasio</label>
-                  <select 
-                     value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}
-                     className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
-                  >
-                     <option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="21:9">21:9</option>
-                  </select>
-               </div>
-            </div>
-
-            <div className="mb-5">
-              <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Timeline Shots</label>
-              <select 
-                value={partCount} onChange={(e) => setPartCount(e.target.value === "Otomatis" ? "Otomatis" : Number(e.target.value))}
-                className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
-              >
-                <option value={1}>1 Shot</option><option value={2}>2 Shots</option><option value={3}>3 Shots</option>
-                <option value={4}>4 Shots</option><option value={5}>5 Shots</option><option value="Otomatis">Auto</option>
-              </select>
-            </div>
-
-            {/* SELEKSI HANTU LOKAL JIKA GENRE HOROR INDONESIA */}
-            {genre === "Indonesian Horror (Mistik Lokal Nusantara)" && (
-              <div className="mb-5 bg-[#1a0505] p-3 rounded border border-red-900/50">
-                <label className="block text-[10px] text-red-500 font-bold mb-2 uppercase tracking-widest text-center border-b border-red-900/50 pb-2">
-                  Pilih Entitas Mistik (Hantu Lokal)
-                </label>
-                <div className="grid grid-cols-2 gap-2 mt-3">
-                   {Object.keys(GHOST_PROMPTS).map(ghost => (
-                      <label key={ghost} className={`flex items-center justify-center p-2 rounded border cursor-pointer transition-all ${selectedGhosts.includes(ghost) ? 'bg-red-900/60 border-red-500' : 'bg-black border-white/10 hover:border-red-500/50'}`}>
-                         <input
-                           type="checkbox"
-                           className="hidden"
-                           checked={selectedGhosts.includes(ghost)}
-                           onChange={() => handleGhostToggle(ghost)}
-                         />
-                         <span className={`text-[9px] font-bold uppercase tracking-widest text-center ${selectedGhosts.includes(ghost) ? 'text-red-400' : 'text-gray-400'}`}>
-                           {ghost}
-                         </span>
-                      </label>
-                   ))}
-                </div>
-                <p className="text-[8px] text-gray-500 mt-3 text-center italic">*Entitas yang dipilih akan otomatis mendapatkan deskripsi visual akurat di prompt AI.</p>
-              </div>
-            )}
-
-            {/* FACE LOCK */}
-            <div className="mb-5 bg-[#111] p-3 rounded border border-white/10">
-              <label className="block text-[10px] text-[#FFC000] font-bold mb-2 uppercase tracking-widest">Face Lock Global</label>
-              <div className="grid grid-cols-5 gap-1.5">
-                {['A', 'B', 'C', 'D', 'E'].map(char => (
-                  <div key={char} className="bg-[#050505] border border-white/20 rounded py-1.5 px-0.5 flex flex-col items-center">
-                    <span className="text-[7.5px] font-bold text-gray-400 mb-2 text-center whitespace-nowrap">@CHAR {char}</span>
-                    <div className="flex flex-col gap-1.5 w-full items-center">
-                       {globalFaceRefs[char]?.map((ref, idx) => (
-                          <div key={idx} className="flex flex-col items-center w-full px-0.5">
-                             <div className="relative w-8 h-8 rounded overflow-hidden border border-white/30 group/thumb">
-                                <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref" />
-                                <button onClick={() => removeGlobalFace(char, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity">
-                                   <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                </button>
-                             </div>
-                             <input type="text" value={ref.partLabel || ''} onChange={(e) => updateGlobalFaceLabel(char, idx, e.target.value)} className="mt-1 w-full bg-[#111] text-[#FFC000] text-[7px] text-center font-bold border border-white/20 rounded focus:border-[#FFC000] focus:outline-none py-0.5 transition-colors" placeholder="Label" />
-                          </div>
-                       ))}
-                       {(globalFaceRefs[char]?.length || 0) < 5 && (
-                          <label className="w-8 h-8 rounded border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5 transition-colors mt-1" title={`Upload Wajah ${char}`}>
-                             <input type="file" multiple accept="image/*" onChange={(e) => handleGlobalFaceUpload(char, e)} className="hidden" />
-                             <span className="text-[12px] text-gray-500 font-bold">+</span>
-                          </label>
-                       )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ASET TAMBAHAN (PRODUK / LOKASI / KARAKTER SAMPINGAN) */}
-            <div className="mb-5 bg-[#111] p-3 rounded border border-[#00BFFF]/30">
-              <label className="block text-[10px] text-[#00BFFF] font-bold mb-2 uppercase tracking-widest">
-                Aset Tambahan (Produk/Lokasi/Lainnya)
-              </label>
-              <div className="grid grid-cols-5 gap-1.5">
-                {[1, 2, 3, 4, 5].map(slotId => (
-                  <div key={`asset-${slotId}`} className="bg-[#050505] border border-white/20 rounded py-1.5 px-0.5 flex flex-col items-center">
-                    <span className="text-[7.5px] font-bold text-gray-400 mb-2 text-center whitespace-nowrap">SLOT {slotId}</span>
-                    <div className="flex flex-col gap-1.5 w-full items-center">
-                       {additionalAssetRefs[slotId]?.map((ref, idx) => (
-                          <div key={idx} className="flex flex-col items-center w-full px-0.5">
-                             <div className="relative w-8 h-8 rounded overflow-hidden border border-[#00BFFF]/50 group/thumb">
-                                <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref asset" />
-                                <button onClick={() => removeAdditionalAsset(slotId, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity">
-                                   <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                </button>
-                             </div>
-                             <input 
-                               type="text" 
-                               value={ref.partLabel || ''} 
-                               onChange={(e) => updateAdditionalAssetLabel(slotId, idx, e.target.value)}
-                               className="mt-1 w-full bg-[#111] text-[#00BFFF] text-[7px] text-center font-bold border border-white/20 rounded focus:border-[#00BFFF] focus:outline-none py-0.5 transition-colors"
-                               placeholder={`Aset ${slotId}`}
-                               title="Ganti nama aset ini (cth: Botol Minum)"
-                             />
-                          </div>
-                       ))}
-                       {(additionalAssetRefs[slotId]?.length || 0) < 1 && (
-                          <label className="w-8 h-8 rounded border border-dashed border-[#00BFFF]/40 hover:border-[#00BFFF] flex items-center justify-center cursor-pointer bg-[#00BFFF]/5 transition-colors mt-1" title={`Upload Aset Slot ${slotId}`}>
-                             <input type="file" accept="image/*" onChange={(e) => handleAdditionalAssetUpload(slotId, e)} className="hidden" />
-                             <span className="text-[12px] text-[#00BFFF] font-bold">+</span>
-                          </label>
-                       )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <p className="text-[8px] text-gray-500 mt-2 italic">*Upload foto ekstra (Produk, Benda, Lokasi) lalu ubah label teksnya. Gambar ini akan dilampirkan otomatis saat merender ke AI.</p>
-            </div>
-
-            <div className="mb-5">
-              <label className="block text-[10px] text-white font-bold mb-1.5 uppercase tracking-widest">Ide Adegan</label>
-              <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="Deskripsi aksi, lokasi..." className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-gray-300 focus:outline-none focus:border-[#FFC000] h-20 resize-none" />
-            </div>
-
-            <div className="mb-5">
-              <label className="block text-[10px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Revisi Adegan (Opsional)</label>
-              <textarea value={sceneRevision} onChange={(e) => setSceneRevision(e.target.value)} placeholder="Cth: Pastikan ada adegan..." className="w-full bg-[#1a1400] border border-[#FFC000]/40 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] h-16 resize-none" />
-            </div>
-
-            {error && <div className="text-red-400 text-[10px] mb-4 p-2 bg-red-900/20 border border-red-500/50 uppercase tracking-wider">{error}</div>}
-            {historySuccessMsg && <div className="text-emerald-400 text-[10px] mb-4 p-2 bg-emerald-900/20 border border-emerald-500/50 uppercase tracking-wider">{historySuccessMsg}</div>}
-
-            <div className="flex flex-col gap-2 mt-4">
-              <button onClick={generateStoryboard} disabled={isGeneratingStoryboard} className="w-full bg-white text-black font-black rounded py-3 transition-colors text-[11px] uppercase tracking-widest hover:bg-gray-200">
-                {isGeneratingStoryboard ? "MERACIK..." : "GENERATE PLAN"}
-              </button>
-              <button onClick={saveToHistory} disabled={isGeneratingStoryboard || isExtendingStoryboard} className="w-full bg-transparent border border-white/30 text-gray-400 hover:text-white font-bold rounded py-2 transition-colors text-[10px] uppercase tracking-widest mt-1">
-                Simpan Histori
-              </button>
-            </div>
-
-            {storyboard.length > 0 && (
-              <div className="mt-5 p-3 border border-[#E50914]/40 bg-[#E50914]/10 rounded">
-                <label className="block text-[10px] text-[#FFC000] font-bold mb-2 uppercase tracking-widest">Perpanjang Cerita</label>
-                <div className="flex gap-2">
-                  <select value={extendPartCount} onChange={(e) => setExtendPartCount(Number(e.target.value))} className="bg-[#111] border border-[#E50914]/40 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase w-1/3">
-                    <option value={1}>+ 1 Shot</option><option value={2}>+ 2 Shots</option><option value={3}>+ 3 Shots</option>
-                    <option value={4}>+ 4 Shots</option><option value={5}>+ 5 Shots</option>
-                  </select>
-                  <button onClick={extendStoryboard} disabled={isExtendingStoryboard} className="w-2/3 bg-[#E50914] text-white font-black rounded py-2 transition-colors text-[10px] uppercase tracking-widest hover:bg-red-700">
-                    {isExtendingStoryboard ? "MERACIK..." : "PERPANJANG"}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* KOLOM KANAN: OUTPUT STORYBOARD */}
-        <div className="lg:col-span-9 relative min-h-[500px]">
-          <div className="h-full flex flex-col">
-            {storyboard.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center border border-white/20 rounded p-12 text-center opacity-50 bg-[#050505]">
-                <h3 className="text-white font-bold tracking-widest text-[16px] mb-2 uppercase">Workspace Kosong</h3>
-                <p className="text-gray-500 text-[12px] max-w-md uppercase tracking-wider">Isi konfigurasi dan generate plan untuk memulai.</p>
-              </div>
-            ) : (
-              <div className="flex flex-col border border-white/20 bg-[#000]">
-                
-                <div className="flex justify-between items-center p-3 border-b border-white/20 bg-[#050505]">
-                  <div className="text-white font-bold text-[11px] tracking-widest uppercase ml-2">{storyboard.length} SHOTS TIMELINE</div>
-                  <button onClick={generateAllImages} disabled={isGeneratingAllImages} className="bg-[#FFC000] hover:bg-yellow-500 text-black font-black py-1.5 px-4 rounded-sm text-[10px] uppercase tracking-widest transition-colors">
-                    {isGeneratingAllImages ? "RENDERING..." : "RENDER ALL RESULTS"}
-                  </button>
-                </div>
-
-                <div className="hidden md:flex border-b border-white/20 bg-[#000]">
-                   <div className="w-[12%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Scene</div>
-                   <div className="w-[33%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Storyboard / Shot Plan</div>
-                   <div className="w-[25%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Prompt / Shot Detail</div>
-                   <div className="w-[30%] text-[10px] text-[#FFC000] font-black uppercase tracking-widest text-center py-3">Video Result <span className="font-normal">(AI GENERATED)</span></div>
-                </div>
-
-                <div className="flex flex-col">
-                  {storyboard.map((shot, index) => {
-                    const isRendering = generatingImages[index] || revisingImage[index] || revisingMotion[index];
-                    const isGeneratingVideo = generatingVideos[index];
-                    const refsForShot = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
-                    const currentVideoEngine = videoEngines[index] || "Veo3 Lite"; 
-
-                    return (
-                      <div key={index} className="flex flex-col md:flex-row border-b border-white/20 relative">
-                        {(isRendering || isGeneratingVideo) && (
-                          <div className="absolute inset-0 z-50 bg-[#000]/85 backdrop-blur-sm flex flex-col items-center justify-center border border-[#FFC000]/50">
-                            <div className="relative flex items-center justify-center w-16 h-16 mb-3">
-                              <div className="absolute inset-0 border-[3px] border-white/10 border-t-[#FFC000] rounded-full animate-spin"></div>
-                              <div className="absolute inset-1.5 border-[3px] border-transparent border-t-red-600 rounded-full animate-spin" style={{ animationDirection: 'reverse' }}></div>
-                              <img src={bangProLogoUrl} alt="Loading" className="w-8 h-8 object-contain animate-pulse" />
-                            </div>
-                            <span className="text-[#FFC000] font-bold tracking-widest text-[10px] animate-pulse uppercase">{isGeneratingVideo ? "GENERATING VIDEO..." : "PROCESSING IMAGE..."}</span>
-                          </div>
-                        )}
-
-                        <div className="w-full md:w-[12%] flex flex-col items-center justify-center p-4 border-r border-white/20 bg-[#050505]">
-                           <span className="font-black text-4xl text-white tracking-tighter">{(index + 1).toString().padStart(2, '0')}</span>
-                           <span className="text-gray-400 text-[9px] font-bold tracking-widest uppercase text-center mt-2 leading-tight">{shot.shotNumber.split(':')[0]}<br/>SHOT</span>
-                           
-                           <div className="mt-4 flex flex-col items-center border-t border-white/10 pt-3 w-full">
-                             <span className="text-[8px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest text-center">
-                               {shot.focusedCharacters && shot.focusedCharacters.length > 0 ? `@CHAR ${shot.focusedCharacters.join(', ')}` : "MANUAL FACE"}
-                             </span>
-                             <div className="flex flex-wrap justify-center gap-1 w-full px-1">
-                               {refsForShot.map((ref, i) => (
-                                 <div key={i} className="relative group/local w-7 h-7" title={ref.partLabel || `Ref ${i+1}`}>
-                                   <img src={ref.previewUrl} alt={`Ref ${i+1}`} className="w-full h-full object-cover rounded-sm border border-[#FFC000]/40 opacity-80 group-hover/local:opacity-100 transition-opacity" />
-                                   <button onClick={() => removeLocalFace(index, i)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/local:opacity-100 transition-opacity rounded-sm">
-                                     <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                                   </button>
-                                 </div>
-                               ))}
-                               {refsForShot.length < 5 && (
-                                 <label className="w-7 h-7 rounded-sm border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5 transition-colors" title="Tambah / Ubah Wajah">
-                                   <input type="file" multiple accept="image/*" onChange={(e) => handleLocalFaceUpload(index, e)} className="hidden" />
-                                   <span className="text-[10px] text-gray-500 font-bold">+</span>
-                                 </label>
-                               )}
-                             </div>
-                           </div>
-                        </div>
-                        
-                        <div className="w-full md:w-[33%] p-4 border-r border-white/20 bg-[#000] flex flex-col">
-                           <textarea value={shot.motionPrompt} onChange={(e) => handleMotionPromptManualEdit(index, e.target.value)} className="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap bg-transparent w-full h-full min-h-[120px] resize-none focus:outline-none focus:bg-[#111] p-2 rounded border border-transparent hover:border-white/10" />
-                           <button onClick={() => handleCopy(shot.motionPrompt, `motion-${index}`)} className="mt-2 text-[9px] font-bold uppercase tracking-widest border border-white/20 text-gray-400 hover:text-white hover:bg-white/10 py-1.5 px-3 rounded w-max transition-colors mb-4">
-                             {copiedStates[`motion-${index}`] ? "Tersalin!" : "Salin Motion Prompt"}
-                           </button>
-
-                           {/* VIDEO GENERATION CONTROLS */}
-                           <div className="mt-auto bg-[#111] p-2 rounded border border-white/10">
-                              <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Generate Video (Dari Image & Motion Prompt)</label>
-                              <div className="flex gap-2">
-                                <select 
-                                  value={currentVideoEngine} 
-                                  onChange={(e) => handleVideoEngineChange(index, e.target.value)} 
-                                  className="bg-[#050505] border border-white/20 rounded p-2 text-[10px] text-white focus:outline-none focus:border-[#FFC000] uppercase w-1/2"
-                                  disabled={!shot.imageUrl || isGeneratingVideo}
-                                >
-                                  <option value="Veo3 Lite">Veo3 Lite</option>
-                                  <option value="Gemini Omni">Gemini Omni</option>
-                                </select>
-                                <button 
-                                  onClick={() => generateVideo(index)} 
-                                  disabled={!shot.imageUrl || isGeneratingVideo} 
-                                  className={`w-1/2 font-black py-2 rounded-sm transition-colors text-[10px] uppercase tracking-widest text-center ${!shot.imageUrl || isGeneratingVideo ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-[#FFC000] text-black hover:bg-yellow-500'}`}
-                                >
-                                  {isGeneratingVideo ? "GENERATING..." : "GENERATE VIDEO"}
-                                </button>
-                              </div>
-                              {!shot.imageUrl && <p className="text-[8px] text-red-400 mt-1 italic">*Generate image terlebih dahulu.</p>}
-                           </div>
-                        </div>
-
-                        <div className="w-full md:w-[25%] p-4 border-r border-white/20 bg-[#050505] flex flex-col">
-                           <div className="text-[10px] text-red-400 font-bold mb-1.5 uppercase tracking-widest">Edit Prompt (Jika Meleset)</div>
-                           <textarea value={shot.imagePrompt} onChange={(e) => handleImagePromptManualEdit(index, e.target.value)} className="text-[10px] text-gray-200 leading-relaxed bg-[#2a0505] border border-red-600/60 focus:border-red-500 focus:bg-[#3a0808] w-full min-h-[120px] resize-none p-2 rounded mb-2 tracking-wide focus:outline-none transition-colors" />
-                           <button onClick={() => handleCopy(shot.imagePrompt, `image-${index}`)} className="mb-4 text-[9px] font-bold uppercase tracking-widest border border-red-500/30 text-red-400 hover:text-white hover:bg-red-600 py-1.5 px-3 rounded w-max transition-colors">
-                             {copiedStates[`image-${index}`] ? "Tersalin!" : "Salin Image Prompt"}
-                           </button>
-                           
-                           <div className="mt-auto bg-[#1a1400] p-2 rounded border border-[#FFC000]/40 mb-2">
-                              <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Instruksi Revisi Instan</label>
-                              <textarea value={imageRevisionInputs[index] || ""} onChange={(e) => setImageRevisionInputs(prev => ({ ...prev, [index]: e.target.value }))} placeholder="Cth: Karakter memakai kacamata hitam..." className="w-full bg-[#050505] border border-[#FFC000]/30 text-white text-[10px] p-2 rounded focus:border-[#FFC000] focus:outline-none resize-none h-14" />
-                           </div>
-
-                           <button onClick={() => generateImage(index)} disabled={generatingImages[index]} className={`w-full font-black py-2.5 rounded-sm transition-colors text-[10px] uppercase tracking-widest text-center ${imageRevisionInputs[index] ? 'bg-[#FFC000] text-black hover:bg-yellow-500' : 'bg-transparent border border-[#FFC000] text-[#FFC000] hover:bg-[#FFC000] hover:text-black'}`}>
-                             {generatingImages[index] ? "PROCESSING..." : (imageRevisionInputs[index] ? "TERAPKAN REVISI & RENDER" : (shot.imageUrl ? "RE-GENERATE IMAGE" : "GENERATE IMAGE"))}
-                           </button>
-                        </div>
-
-                        <div className="w-full md:w-[30%] bg-[#000] p-1 flex items-center justify-center relative group/preview">
-                           <div className="hidden md:block absolute -left-3 top-1/2 -translate-y-1/2 text-[#FFC000] z-10"><svg className="w-6 h-6 drop-shadow-md" fill="currentColor" viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></div>
-                           
-                           {shot.imageUrl ? (
-                              <div className="relative w-full h-full min-h-[180px] bg-black">
-                                 {/* Toggle between Image and Video view if video exists */}
-                                 {shot.videoUrl && showVideoPreview[index] ? (
-                                    <video 
-                                      src={shot.videoUrl} 
-                                      className="w-full h-full object-cover" 
-                                      controls 
-                                      autoPlay 
-                                      loop 
-                                      muted
-                                      onClick={() => setPreviewVideo({ url: shot.videoUrl, title: shot.shotNumber })}
-                                    />
-                                 ) : (
-                                    <img 
-                                      src={shot.imageUrl} 
-                                      alt={shot.shotNumber} 
-                                      className="w-full h-full object-cover cursor-pointer" 
-                                      onClick={() => setPreviewImage({ url: shot.imageUrl, title: shot.shotNumber })}
-                                    />
-                                 )}
-
-                                 {/* Hover overlay for fullscreen view */}
-                                 <div className={`absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover/preview:opacity-100 transition-opacity pointer-events-none`}>
-                                    <div className="w-10 h-10 rounded-full border-2 border-white flex items-center justify-center bg-black/50"><svg className="w-4 h-4 text-white ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg></div>
-                                 </div>
-
-                                 {/* Toggle button if both image and video exist */}
-                                 {shot.videoUrl && shot.imageUrl && (
-                                    <button 
-                                      onClick={() => setShowVideoPreview(prev => ({ ...prev, [index]: !prev[index] }))} 
-                                      className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded border border-white/20 transition-colors z-20"
-                                    >
-                                      {showVideoPreview[index] ? "Lihat Gambar" : "Lihat Video"}
-                                    </button>
-                                  )}
-                              </div>
-                           ) : (
-                              <div className="w-full h-full min-h-[180px] bg-[#050505] border border-white/5 flex items-center justify-center"><span className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">NO RESULT YET</span></div>
-                           )}
-                        </div>
-
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            CRITICAL CONSISTENCY DIRECTIVE (MANDATORY FOR AI IMAGE STABILITY):
+            1. MASTER ENVIRONMENT: Define the specific location, lighting, and weather ONCE. You MUST reuse these EXACT words in every single shot that takes place in this location.
+            2. MASTER CHARACTER(S): Define Character A (and B, C...) with exact gender, age, ethnicity, facial features, hair, and clothing. You MUST reuse this EXACT word-for-word description in EVERY shot they appear in.
+            ${alternatingInstruction}
             
-            {/* FOOTER GALLERY - Menampilkan Video jika ada, atau Gambar */}
-            {storyboard.some(s => s.imageUrl) && (
-              <div className="mt-6 border-t-2 border-[#FFC000] pt-4 px-2">
-                 <h3 className="text-[#FFC000] font-black text-[12px] uppercase tracking-widest mb-3">FINAL RESULT <span className="text-gray-400 font-normal ml-1">(AI VIDEO OUTPUT)</span></h3>
-                 <div className="flex gap-1 overflow-x-auto pb-2 custom-scrollbar">
-                    {storyboard.filter(s => s.imageUrl).map((shot, idx) => (
-                       <div key={idx} className="flex-shrink-0 w-64 aspect-video relative group cursor-pointer border border-white/20 bg-black">
-                          {shot.videoUrl ? (
-                            <video 
-                              src={shot.videoUrl} 
-                              className="w-full h-full object-cover" 
-                              muted 
-                              onMouseOver={event => event.target.play()} 
-                              onMouseOut={event => event.target.pause()}
-                              onClick={() => setPreviewVideo({ url: shot.videoUrl, title: shot.shotNumber })}
-                            />
-                          ) : (
-                            <img 
-                              src={shot.imageUrl} 
-                              className="w-full h-full object-cover" 
-                              alt={`Final ${idx}`} 
-                              onClick={() => setPreviewImage({ url: shot.imageUrl, title: shot.shotNumber })}
-                            />
-                          )}
-                          {shot.videoUrl && <div className="absolute top-1 right-1 bg-[#FFC000] text-black text-[8px] font-bold px-1.5 py-0.5 rounded-sm">VIDEO READY</div>}
-                       </div>
-                    ))}
+            ULTRA-REALISM DIRECTIVE:
+            Make the imagePrompt EXTREMELY detailed. Include cinematic lighting like "dramatic rim lighting", "shallow depth of field with bokeh background".
+
+            ${charInstruction}
+            ${partInstruction} 
+            
+            For each shot, provide:
+            1. shotNumber: e.g., "SCENE 1", "SCENE 2"
+            2. timecode: Estimate the timecode range.
+            3. needsFaceReference: BOOLEAN. (MUST BE false for Insert/Environment shots).
+            4. focusedCharacters: ARRAY of STRINGS (e.g., ["A", "B"], ["A"], or [] for insert shots).
+            5. hasFemaleCharacter: BOOLEAN.
+            6. imagePrompt: Single, highly detailed paragraph. MUST include the Master Character/Environment strings.
+
+        [IF needsFaceReference IS true, START EXACTLY WITH THIS LINE]:
+        **Kunci Wajah Aktif**: Wajah subjek HARUS identik dengan foto referensi. Pertahankan semua fitur wajah asli tanpa perubahan.
+
+        [ENGLISH DESCRIPTION FORMAT]:
+        IF CHARACTERS ARE VISIBLE:
+        [Shot type and camera angle]. [MASTER CHARACTER STRING]. [Describe specific action or pose]. The setting is [MASTER ENVIRONMENT STRING: EXACT identical location]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
+
+        IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
+        [Shot type: EXTREME CLOSE UP / WIDE ESTABLISHING]. [Describe the specific object]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
+
+            7. motionPrompt: A highly detailed motion prompt. Follow the exact structure below. 
+
+            **EXACT FORMAT FOR motionPrompt (preserve all empty lines):**
+            Cinematic sequence with strict ${genre} aesthetic and lighting.
+
+            [If needsFaceReference is true]: LIVE-ACTION REAL HUMAN. [Describe focused Character(s)].
+            [If needsFaceReference is false]: LIVE-ACTION REAL HUMAN (NO FACE IN FRAME). [Describe action or object].
+
+            [If character visible]: Character outfit is [Describe Outfit matching the ${genre}].
+
+            Shot [Number] ([Type], [Timecode]):
+            [Action]
+
+            [Insert Film look matching ${genre}].
+            Heavy grain.
+            Natural particle physics V1.02.
+            Premium cinematic motion blur.`;
+          };
+
+          const generateStoryboard = async () => {
+            if (!idea.trim()) return setError("Silakan masukkan ide adegan terlebih dahulu brow!");
+            setError(""); setIsGeneratingStoryboard(true);
+
+            const systemPrompt = getSystemPromptText();
+            const payload = {
+              contents: [{ parts: [{ text: `Genre: ${genre}\nOriginal Idea: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION FROM USER: ${sceneRevision} (You MUST integrate this revision logically into the new storyboard sequence.)\n` : ''}Required Parts: ${partCount === "Otomatis" ? "Auto" : partCount}` }] }],
+              systemInstruction: { parts: [{ text: systemPrompt }] },
+              generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: "ARRAY",
+                  items: {
+                    type: "OBJECT",
+                    properties: { 
+                      shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
+                      focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
+                      imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
+                    },
+                    required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
+                  }
+                }
+              }
+            };
+
+            try {
+              const url = '/api/generate-text'; 
+              const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+              const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+              
+              if (textResponse) {
+                const parsed = JSON.parse(textResponse);
+                const initializedStoryboard = parsed.map(shot => {
+                  let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
+                  if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
+                    let allRefs = [];
+                    shot.focusedCharacters.forEach(charId => {
+                      if (globalFaceRefs[charId]) {
+                        allRefs = [...allRefs, ...globalFaceRefs[charId].map(ref => ({...ref, partLabel: `@CHAR ${charId}`}))];
+                      }
+                    });
+                    allRefs.slice(0, 5).forEach((ref, i) => { newShot[`faceReference${i + 1}`] = ref; });
+                  }
+                  return newShot;
+                });
+                setStoryboard(initializedStoryboard);
+              } else throw new Error("Respons teks kosong");
+            } catch (err) { setError(`Gagal menghasilkan prompt. Detail: ${err.message}`); } 
+            finally { setIsGeneratingStoryboard(false); }
+          };
+
+          const extendStoryboard = async () => {
+            if (storyboard.length === 0) return setError("Silakan generate adegan awal terlebih dahulu brow!");
+            setError(""); setIsExtendingStoryboard(true);
+
+            const systemPrompt = getSystemPromptText();
+            const payload = {
+              contents: [{ parts: [{ text: `Genre: ${genre}\nIdea Continuation: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION: ${sceneRevision}\n` : ''}Required New Parts: ${extendPartCount}` }] }],
+              systemInstruction: { parts: [{ text: systemPrompt }] },
+              generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: "ARRAY",
+                  items: {
+                    type: "OBJECT",
+                    properties: { 
+                      shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
+                      focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
+                      imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
+                    },
+                    required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
+                  }
+                }
+              }
+            };
+
+            try {
+              const url = '/api/generate-text'; 
+              const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+              const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+              
+              if (textResponse) {
+                const parsed = JSON.parse(textResponse);
+                const initializedStoryboard = parsed.map(shot => {
+                  let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
+                  if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
+                    let allRefs = [];
+                    shot.focusedCharacters.forEach(charId => {
+                      if (globalFaceRefs[charId]) {
+                        allRefs = [...allRefs, ...globalFaceRefs[charId].map(ref => ({...ref, partLabel: `@CHAR ${charId}`}))];
+                      }
+                    });
+                    allRefs.slice(0, 5).forEach((ref, i) => { newShot[`faceReference${i + 1}`] = ref; });
+                  }
+                  return newShot;
+                });
+                setStoryboard(prev => [...prev, ...initializedStoryboard]);
+              } else throw new Error("Respons teks kosong");
+            } catch (err) { setError(`Gagal memperpanjang cerita. Detail: ${err.message}`); } 
+            finally { setIsExtendingStoryboard(false); }
+          };
+
+          const generateImage = async (index, overriddenShot = null) => {
+            const shot = overriddenShot || storyboard[index];
+            setError(""); setGeneratingImages(prev => ({ ...prev, [index]: true }));
+
+            try {
+              const femaleEnhancer = shot.hasFemaleCharacter ? " Female subject(s) must have ultra-realistic, natural, emotional features. " : "";
+              const realismEnhancer = " Shot on ARRI Alexa 65, 50mm f/1.4 lens. RAW ultra-photorealistic cinematic still. Gritty realism: highly detailed natural skin texture, visible pores, subtle sweat, dirt/grime smudges. Dramatic cinematic lighting: stark chiaroscuro, striking rim light (fireglow/neon), deep shadows. Shallow depth of field, heavily blurred background (beautiful bokeh). Masterpiece, lifelike, highly detailed real-world photography. ";
+              const antiCgiAddon = " STRICTLY FORBIDDEN: CGI, 3D render, Unreal Engine, cartoon, anime, illustration, painting, smooth plastic skin, airbrushed, unnatural proportions, deformed, mutated, AI artifacts. MUST look exactly like a real photograph from a high-budget Hollywood movie set. ";
+              
+              const revisionText = imageRevisionInputs[index] ? ` \n[MANDATORY USER REVISION/OVERRIDE: ${imageRevisionInputs[index]}] ` : "";
+
+              let ghostRealismAddon = "";
+              if (genre === "Indonesian Horror (Mistik Lokal Nusantara)" && selectedGhosts.length > 0) {
+                const ghostDetails = selectedGhosts.map(g => `${g}: ${GHOST_PROMPTS[g]}`).join(" | ");
+                ghostRealismAddon = ` \n[MANDATORY GHOST DESIGN REFERENCE: If the prompt includes these entities, strictly follow their design: ${ghostDetails}] `;
+              }
+
+              const finalImagePrompt = `[CINEMATIC GENRE: ${genre}] [CONSISTENT SCENE STRICT ENFORCEMENT] ${shot.imagePrompt} ${revisionText} ${ghostRealismAddon} ${femaleEnhancer} ${realismEnhancer} ${antiCgiAddon} EXTREMELY IMPORTANT: The output image MUST be exactly in ${aspectRatio} aspect ratio format.`;
+
+              const hasFaceRef = shot.faceReference1 || shot.faceReference2 || shot.faceReference3 || shot.faceReference4 || shot.faceReference5;
+              const url = '/api/generate-image'; 
+              const apiParts = [];
+
+              let baseText = "";
+              if (shot.needsFaceReference && hasFaceRef) {
+                baseText = `Create an ULTRA-REALISTIC live-action photograph. STRICTLY PRESERVE the exact face identity, gender, and facial structure from the reference images. To maintain consistency across shots, the character's clothing and the background environment MUST perfectly match the prompt description. Must NOT look like CGI or 3D. Prompt: ${finalImagePrompt}`;
+              } else {
+                baseText = `Create an ULTRA-REALISTIC live-action photograph. Ensure the environment, lighting, and clothing EXACTLY match the description to maintain consistency. Must NOT look like CGI or 3D. Prompt: ${finalImagePrompt}`;
+              }
+
+              apiParts.push({ text: baseText });
+
+              if (shot.needsFaceReference && hasFaceRef) {
+                if (shot.faceReference1) apiParts.push({ inlineData: { mimeType: shot.faceReference1.mimeType, data: shot.faceReference1.base64 } });
+                if (shot.faceReference2) apiParts.push({ inlineData: { mimeType: shot.faceReference2.mimeType, data: shot.faceReference2.base64 } });
+                if (shot.faceReference3) apiParts.push({ inlineData: { mimeType: shot.faceReference3.mimeType, data: shot.faceReference3.base64 } });
+                if (shot.faceReference4) apiParts.push({ inlineData: { mimeType: shot.faceReference4.mimeType, data: shot.faceReference4.base64 } });
+                if (shot.faceReference5) apiParts.push({ inlineData: { mimeType: shot.faceReference5.mimeType, data: shot.faceReference5.base64 } });
+              }
+
+              let hasAdditionalAssets = false;
+              const additionalAssetTexts = [];
+              Object.keys(additionalAssetRefs).forEach(slotId => {
+                if (additionalAssetRefs[slotId] && additionalAssetRefs[slotId].length > 0) {
+                  hasAdditionalAssets = true;
+                  additionalAssetRefs[slotId].forEach(ref => {
+                    const label = ref.partLabel || `Asset ${slotId}`;
+                    additionalAssetTexts.push(`MANDATORY REFERENCE INCLUSION: You MUST seamlessly integrate "${label}" into the scene based on this provided image. It should look natural within the ${genre} environment.`);
+                    apiParts.push({ inlineData: { mimeType: ref.mimeType, data: ref.base64 } });
+                  });
+                }
+              });
+
+              if (hasAdditionalAssets) {
+                  apiParts[0].text += ` \n\n${additionalAssetTexts.join("\n")}`;
+              }
+
+              const payload = { contents: [{ parts: apiParts }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } };
+              const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+
+              if (result.error) throw new Error(result.error.message || "API Error");
+              const base64Image = result.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+
+              if (base64Image) {
+                setStoryboard(prev => { const newBoard = [...prev]; newBoard[index] = { ...newBoard[index], imageUrl: `data:image/png;base64,${base64Image}` }; return newBoard; });
+              } else throw new Error("Tidak ada data gambar");
+            } catch (err) { setError(`Gagal merender gambar. Detail: ${err.message}`); } 
+            finally { setGeneratingImages(prev => ({ ...prev, [index]: false })); }
+          };
+
+          const generateVideo = async (index) => {
+            const shot = storyboard[index];
+            if (!shot.imageUrl) return setError("Generate gambar dulu sebelum video brow!");
+            
+            const engine = videoEngines[index] || "Veo3 Lite"; 
+
+            setError("");
+            setGeneratingVideos(prev => ({ ...prev, [index]: true }));
+
+            try {
+              const response = await fetch('/api/generate-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: shot.imageUrl, motionPrompt: shot.motionPrompt, engine: engine })
+              });
+
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.error || "Gagal menghubungi Video Server");
+
+              let finalVideoUrl = "";
+              const part = result.candidates?.[0]?.content?.parts?.[0];
+              if (part?.inlineData) {
+                finalVideoUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+              } else if (part?.fileData?.fileUri) {
+                finalVideoUrl = part.fileData.fileUri;
+              } else {
+                throw new Error("API tidak mengembalikan data video yang valid.");
+              }
+
+              setStoryboard(prev => {
+                const newBoard = [...prev];
+                newBoard[index] = { ...newBoard[index], videoUrl: finalVideoUrl };
+                return newBoard;
+              });
+              setShowVideoPreview(prev => ({ ...prev, [index]: true }));
+
+            } catch (err) { setError(`Gagal merender video. Detail: ${err.message}`); } 
+            finally { setGeneratingVideos(prev => ({ ...prev, [index]: false })); }
+          };
+
+          const generateAllImages = async () => {
+            if (storyboard.length === 0) return;
+            setIsGeneratingAllImages(true);
+            for (let i = 0; i < storyboard.length; i++) {
+              await generateImage(i);
+              if (i < storyboard.length - 1) await new Promise(resolve => setTimeout(resolve, 4000));
+            }
+            setIsGeneratingAllImages(false);
+          };
+
+          const downloadImage = (imageUrl, fileName) => {
+            const link = document.createElement('a');
+            link.href = imageUrl; link.download = fileName;
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+          };
+
+          const downloadVideo = (videoUrl, fileName) => {
+            const link = document.createElement('a');
+            link.href = videoUrl; link.download = fileName;
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+          };
+
+          const handleCopy = (text, key) => {
+            const textArea = document.createElement("textarea");
+            textArea.value = text; document.body.appendChild(textArea); textArea.select();
+            document.execCommand('copy'); document.body.removeChild(textArea);
+            
+            setCopiedStates(prev => ({ ...prev, [key]: true }));
+            setTimeout(() => { setCopiedStates(prev => ({ ...prev, [key]: false })); }, 2000);
+          };
+
+          if (!isLoggedIn || !hasAccess) {
+            return (
+              <div className="min-h-screen bg-black text-gray-200 font-sans flex items-center justify-center relative overflow-hidden">
+                <div className="relative z-10 bg-[#0a0a0a] border border-white/20 rounded-xl p-8 md:p-10 shadow-2xl w-[90%] max-w-md overflow-hidden">
+                  <div className="flex flex-col items-center mb-8 relative z-10">
+                    <img src={bangProLogoUrl} alt="Bang Pro" className="h-16 mb-4 object-contain" />
+                    <h1 className="text-2xl font-black text-white tracking-widest text-center uppercase">
+                      AI STORYBOARD <br/><span className="text-[#FFC000]">CINEMATIC ACTION</span>
+                    </h1>
+                  </div>
+                  <form onSubmit={handleLogin} className="relative z-10 flex flex-col gap-5">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-2 font-medium tracking-wider">EMAIL TERDAFTAR</label>
+                      <input 
+                        type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)}
+                        placeholder="contoh@gmail.com" disabled={isCheckingAccess}
+                        className="w-full bg-[#111] border border-white/20 focus:border-[#FFC000] rounded p-3 text-sm text-white focus:outline-none transition-all" required
+                      />
+                    </div>
+                    {loginError && <div className="text-red-500 text-xs p-3 border border-red-500/30 rounded bg-red-900/20">{loginError}</div>}
+                    <button type="submit" disabled={isCheckingAccess} className="w-full bg-[#E50914] hover:bg-red-700 text-white font-bold rounded py-3 transition-all text-sm tracking-widest border border-red-600 disabled:opacity-50 uppercase">
+                      {isCheckingAccess ? "MENGECEK AKSES..." : "MASUK APLIKASI"}
+                    </button>
+                  </form>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="min-h-screen bg-[#000000] text-gray-200 font-sans relative">
+              <nav className="bg-[#000] border-b border-white/10 flex justify-between items-center px-4 py-2">
+                 <div className="flex items-center gap-2">
+                    <button onClick={() => setIsHistoryOpen(true)} className="text-[#FFC000] border border-[#FFC000]/30 hover:bg-[#FFC000]/10 px-3 py-1 rounded text-[10px] font-bold tracking-widest uppercase transition-all">
+                      Histori Proyek
+                    </button>
                  </div>
-              </div>
-            )}
+                 <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <div className="text-[10px] font-bold text-white uppercase">{activeUsername}</div>
+                      <div className="text-[9px] text-gray-400">{activeEmail}</div>
+                    </div>
+                    <button onClick={handleLogout} className="text-red-500 hover:text-white text-[10px] font-bold uppercase border border-red-500/30 px-2 py-1 rounded">Keluar</button>
+                 </div>
+              </nav>
 
-          </div>
-        </div>
-      </main>
+              <header className="bg-[#000] border-b border-white/20 px-4 md:px-8 py-6 flex flex-col md:flex-row justify-between items-start md:items-end w-full">
+                 <div className="flex flex-col items-start mb-4 md:mb-0">
+                    <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-white tracking-tighter uppercase leading-none">AI STORYBOARD</h1>
+                    <h2 className="text-3xl md:text-4xl lg:text-5xl font-black text-[#FFC000] tracking-tighter uppercase leading-none">CINEMATIC ACTION</h2>
+                 </div>
+                 <div className="flex flex-col items-end">
+                    <div className="bg-white px-1 py-1 rounded-sm border border-gray-800 flex flex-col items-center">
+                       <img src={bangProLogoUrl} alt="Bang Pro" className="h-12 md:h-16 object-contain" />
+                    </div>
+                 </div>
+              </header>
 
-      <footer className="mt-8 bg-[#000] border-t border-white/20 py-4 px-4 md:px-8 relative z-10 flex flex-col md:flex-row justify-between items-center gap-4">
-         <div className="max-w-4xl">
-            <h4 className="text-[#FFC000] font-bold text-[11px] tracking-widest mb-1 uppercase">AI PROMPT <span className="text-gray-400 font-normal ml-1">(FULL MOVIE)</span></h4>
-            <p className="text-gray-400 text-[10px] leading-relaxed uppercase tracking-wider">Cinematic action movie, realistic, dramatic lighting, epic scene, detailed environment, 4k, ultra realistic, high contrast, film look, motion blur, depth of field, atmospheric, ultra detail.</p>
-         </div>
-         <div className="flex items-center gap-4 bg-transparent border border-white/20 px-3 py-1.5 rounded-sm text-white font-bold uppercase text-[10px] tracking-wider">
-            <span className="flex items-center bg-white text-black px-1 py-0.5"><img src={bangProLogoUrl} alt="Bang Pro" className="h-3 mr-1 object-contain" /></span>
-            <span className="flex items-center text-gray-300"><svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>AI LABS</span>
-            <span className="text-gray-500">AI FILMMAKING TOOLS</span>
-         </div>
-      </footer>
+              <main className="max-w-full mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10 bg-[#000]">
+                {/* KOLOM KIRI */}
+                <div className="lg:col-span-3 space-y-4">
+                  <div className="bg-[#050505] border border-white/20 rounded p-5 sticky top-6">
+                    <h2 className="text-[12px] font-bold text-white mb-5 uppercase tracking-widest border-b border-white/10 pb-2">Konfigurasi Adegan</h2>
+                    
+                    <div className="mb-4">
+                      <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Genre Sinematik</label>
+                      <select value={genre} onChange={(e) => setGenre(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
+                        <option value="Action High-Octane">Action High-Octane</option>
+                        <option value="Cyberpunk Noir">Cyberpunk Noir</option>
+                        <option value="Sci-Fi Thriller">Sci-Fi Thriller</option>
+                        <option value="Epic Fantasy">Epic Fantasy</option>
+                        <option value="Horror Suspense">Horror Suspense</option>
+                        <option value="Indonesian Horror (Mistik Lokal Nusantara)">Horor Indonesia</option>
+                      </select>
+                    </div>
 
-      {/* PREVIEW MODAL IMAGE */}
-      {previewImage && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
-          <div className="relative max-w-5xl w-full flex flex-col items-center">
-            <div className="w-full flex justify-between items-center mb-4">
-              <h3 className="text-[#FFC000] font-bold text-[12px] tracking-widest uppercase">IMAGE PREVIEW</h3>
-              <button onClick={() => setPreviewImage(null)} className="text-white hover:text-[#FFC000] p-2 transition-colors"><svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-            </div>
-            <img src={previewImage.url} alt="Fullscreen Preview" className="w-full h-auto max-h-[80vh] object-contain border border-white/20" />
-            <button onClick={() => downloadImage(previewImage.url, `Shot-${previewImage.title}.png`)} className="mt-6 border border-white/30 text-white px-8 py-2 text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-all">Download Image</button>
-          </div>
-        </div>
-      )}
+                    <div className="mb-4 grid grid-cols-2 gap-3">
+                       <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Karakter</label>
+                          <select value={characterCount} onChange={(e) => setCharacterCount(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
+                             <option value="1">1 Karakter</option><option value="2">2 Karakter</option><option value="Otomatis">Otomatis</option>
+                          </select>
+                       </div>
+                       <div>
+                          <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Rasio</label>
+                          <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
+                             <option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option>
+                          </select>
+                       </div>
+                    </div>
 
-      {/* PREVIEW MODAL VIDEO */}
-      {previewVideo && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
-          <div className="relative max-w-5xl w-full flex flex-col items-center">
-            <div className="w-full flex justify-between items-center mb-4">
-              <h3 className="text-[#FFC000] font-bold text-[12px] tracking-widest uppercase">VIDEO PREVIEW</h3>
-              <button onClick={() => setPreviewVideo(null)} className="text-white hover:text-[#FFC000] p-2 transition-colors"><svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
-            </div>
-            <video src={previewVideo.url} className="w-full h-auto max-h-[80vh] object-contain border border-white/20" controls autoPlay loop />
-            <button onClick={() => downloadVideo(previewVideo.url, `Shot-${previewVideo.title}.mp4`)} className="mt-6 border border-white/30 text-white px-8 py-2 text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-all">Download Video</button>
-          </div>
-        </div>
-      )}
+                    <div className="mb-5">
+                      <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Timeline Shots</label>
+                      <select value={partCount} onChange={(e) => setPartCount(e.target.value === "Otomatis" ? "Otomatis" : Number(e.target.value))} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
+                        <option value={1}>1 Shot</option><option value={2}>2 Shots</option><option value={3}>3 Shots</option><option value="Otomatis">Auto</option>
+                      </select>
+                    </div>
 
-      {isHistoryOpen && (
-        <div className="fixed inset-0 z-[110] bg-[#000] text-gray-200 overflow-y-auto">
-          <div className="sticky top-0 z-50 bg-[#000] border-b border-white/20 px-4 md:px-8 py-4 flex justify-between items-center shadow-md">
-            <div className="flex items-center">
-              <button onClick={() => setIsHistoryOpen(false)} className="mr-4 text-white border border-white/20 px-3 py-1.5 rounded text-[10px] uppercase font-bold tracking-widest hover:bg-white/10 transition-all">Kembali</button>
-              <h2 className="text-lg font-black text-white uppercase tracking-widest flex items-center">Histori Proyek <span className="text-[#FFC000] ml-2">Ailabs</span></h2>
-            </div>
-          </div>
-          <div className="max-w-5xl mx-auto p-4 md:p-8">
-            {projectHistory.length === 0 ? (
-              <div className="text-center mt-20 border border-white/20 p-10 bg-[#050505]"><h3 className="text-white font-bold tracking-widest uppercase">Histori Kosong</h3></div>
-            ) : (
-              <div className="space-y-8">
-                {projectHistory.map((item) => (
-                  <div key={item.id} className="bg-[#050505] border border-white/20 rounded p-6">
-                    <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-4">
-                      <div>
-                        <div className="text-[10px] text-[#FFC000] font-bold tracking-widest uppercase mb-1">{item.date}</div>
-                        <h3 className="text-white font-bold text-lg uppercase tracking-wider">{item.genre}</h3>
-                        {item.idea && <p className="text-gray-400 text-[10px] mt-2 mb-2 pr-4 italic line-clamp-2 uppercase">"{item.idea}"</p>}
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => loadFromHistory(item)} className="bg-white text-black px-4 py-2 text-[10px] font-bold uppercase tracking-widest hover:bg-gray-300">Muat Ulang</button>
-                        <button onClick={() => deleteHistory(item.id)} className="border border-red-500 text-red-500 px-3 py-2 hover:bg-red-500 hover:text-white transition-colors"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                    <div className="mb-5 bg-[#111] p-3 rounded border border-white/10">
+                      <label className="block text-[10px] text-[#FFC000] font-bold mb-2 uppercase tracking-widest">Face Lock Global</label>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {['A', 'B', 'C', 'D', 'E'].map(char => (
+                          <div key={char} className="bg-[#050505] border border-white/20 rounded py-1.5 px-0.5 flex flex-col items-center">
+                            <span className="text-[7.5px] font-bold text-gray-400 mb-2 text-center whitespace-nowrap">@CHAR {char}</span>
+                            <div className="flex flex-col gap-1.5 w-full items-center">
+                               {globalFaceRefs[char]?.map((ref, idx) => (
+                                  <div key={idx} className="relative w-8 h-8 rounded border border-white/30 group">
+                                     <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref" />
+                                     <button onClick={() => removeGlobalFace(char, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white text-xs">X</span></button>
+                                  </div>
+                               ))}
+                               {(globalFaceRefs[char]?.length || 0) < 5 && (
+                                  <label className="w-8 h-8 rounded border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5"><input type="file" multiple accept="image/*" onChange={(e) => handleGlobalFaceUpload(char, e)} className="hidden" /><span className="text-[12px] text-gray-500 font-bold">+</span></label>
+                               )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                    <div className="flex flex-col gap-3">
-                       {item.storyboard.map((s, idx) => (
-                          <div key={idx} className="flex flex-col md:flex-row gap-4 border border-white/10 p-3 bg-[#111] rounded items-start">
-                             <div className="w-full md:w-[20%] flex-shrink-0">
-                                <div className="aspect-video bg-[#050505] border border-white/20 relative rounded overflow-hidden">
-                                   {/* Tampilkan thumbnail video jika ada, jika tidak tampilkan gambar */}
-                                   {s.videoUrl ? (
-                                     <video src={s.videoUrl} className="w-full h-full object-cover" muted /> 
-                                   ) : (
-                                     s.imageUrl ? <img src={s.imageUrl} className="w-full h-full object-cover" alt={`History Shot ${idx+1}`} /> : <div className="absolute inset-0 flex items-center justify-center text-[9px] text-gray-600 font-bold uppercase tracking-widest">NO IMAGE</div>
-                                   )}
-                                   <div className="absolute top-1 left-1 bg-black/80 px-1.5 py-0.5 text-[8px] text-[#FFC000] font-bold rounded border border-white/10">SHOT {idx+1} {s.videoUrl && "(VIDEO)"}</div>
-                                </div>
-                             </div>
-                             <div className="w-full md:w-[80%] flex flex-col md:flex-row gap-3">
-                                <div className="w-full md:w-1/2 flex flex-col">
-                                   <div className="flex justify-between items-center mb-1"><span className="text-[9px] text-red-400 font-bold tracking-widest uppercase">Image Prompt</span></div>
-                                   <div className="bg-[#050505] p-2 text-[9px] text-gray-300 rounded border border-white/5 h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed">{s.imagePrompt}</div>
-                                </div>
-                                <div className="w-full md:w-1/2 flex flex-col">
-                                   <div className="flex justify-between items-center mb-1"><span className="text-[9px] text-[#FFC000] font-bold tracking-widest uppercase">Motion Prompt</span></div>
-                                   <div className="bg-[#050505] p-2 text-[9px] text-gray-300 rounded border border-white/5 h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed">{s.motionPrompt}</div>
-                                </div>
-                             </div>
-                          </div>
-                       ))}
+
+                    <div className="mb-5">
+                      <label className="block text-[10px] text-white font-bold mb-1.5 uppercase tracking-widest">Ide Adegan</label>
+                      <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="Deskripsi aksi, lokasi..." className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-gray-300 h-20" />
+                    </div>
+
+                    {error && <div className="text-red-400 text-[10px] mb-4 p-2 bg-red-900/20 border border-red-500/50 uppercase">{error}</div>}
+                    {historySuccessMsg && <div className="text-emerald-400 text-[10px] mb-4 p-2 bg-emerald-900/20 border border-emerald-500/50 uppercase">{historySuccessMsg}</div>}
+
+                    <div className="flex flex-col gap-2 mt-4">
+                      <button onClick={generateStoryboard} disabled={isGeneratingStoryboard} className="w-full bg-white text-black font-black rounded py-3 text-[11px] uppercase hover:bg-gray-200">{isGeneratingStoryboard ? "MERACIK..." : "GENERATE PLAN"}</button>
+                      <button onClick={saveToHistory} className="w-full bg-transparent border border-white/30 text-gray-400 hover:text-white font-bold rounded py-2 text-[10px] uppercase mt-1">Simpan Histori</button>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+                </div>
 
-      {(isGeneratingStoryboard || isExtendingStoryboard) && (
-        <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-black/90 backdrop-blur-md animate-[fadeIn_0.2s_ease-out]">
-          <div className="relative flex items-center justify-center w-28 h-28 mb-6">
-            <div className="absolute inset-0 border-4 border-white/10 border-t-[#FFC000] rounded-full animate-spin"></div>
-            <div className="absolute inset-2 border-4 border-transparent border-t-red-600 rounded-full animate-spin" style={{ animationDirection: 'reverse' }}></div>
-            <img src={bangProLogoUrl} alt="Loading" className="w-14 h-14 object-contain animate-pulse" />
-          </div>
-          <h2 className="text-[#FFC000] font-black text-[14px] tracking-widest uppercase animate-pulse text-center">
-            {isGeneratingStoryboard ? "MERACIK KONSEP STORYBOARD..." : "MEMPERPANJANG ALUR CERITA..."}
-          </h2>
-          <p className="text-gray-500 text-[10px] mt-2 uppercase tracking-widest text-center">AI Sedang Bekerja... Mohon Tunggu Brow</p>
-        </div>
-      )}
-    </div>
-  );
-};
+                {/* KOLOM KANAN */}
+                <div className="lg:col-span-9 relative min-h-[500px]">
+                    {storyboard.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center border border-white/20 rounded p-12 text-center opacity-50 bg-[#050505]">
+                        <h3 className="text-white font-bold tracking-widest text-[16px] mb-2 uppercase">Workspace Kosong</h3>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col border border-white/20 bg-[#000]">
+                        <div className="flex justify-between items-center p-3 border-b border-white/20 bg-[#050505]">
+                          <div className="text-white font-bold text-[11px] uppercase ml-2">{storyboard.length} SHOTS TIMELINE</div>
+                        </div>
 
-export default App;
+                        {storyboard.map((shot, index) => {
+                          const isRendering = generatingImages[index] || generatingVideos[index];
+                          const refsForShot = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
+                          const currentVideoEngine = videoEngines[index] || "Veo3 Lite"; 
+
+                          return (
+                            <div key={index} className="flex flex-col md:flex-row border-b border-white/20 relative">
+                              {isRendering && (
+                                <div className="absolute inset-0 z-50 bg-[#000]/85 flex flex-col items-center justify-center">
+                                  <span className="text-[#FFC000] font-bold text-[14px] animate-pulse">PROCESSING...</span>
+                                </div>
+                              )}
+
+                              <div className="w-full md:w-[12%] flex flex-col items-center justify-center p-4 border-r border-white/20 bg-[#050505]">
+                                 <span className="font-black text-4xl text-white">{(index + 1).toString().padStart(2, '0')}</span>
+                                 <div className="flex flex-wrap justify-center gap-1 w-full px-1 mt-4">
+                                   {refsForShot.map((ref, i) => (
+                                      <div key={i} className="relative w-7 h-7"><img src={ref.previewUrl} className="w-full h-full object-cover border border-[#FFC000]/40" /></div>
+                                   ))}
+                                   {refsForShot.length < 5 && (
+                                     <label className="w-7 h-7 border border-dashed border-white/30 flex items-center justify-center cursor-pointer bg-white/5"><input type="file" multiple accept="image/*" onChange={(e) => handleLocalFaceUpload(index, e)} className="hidden" /><span className="text-[10px] text-gray-500">+</span></label>
+                                   )}
+                                 </div>
+                              </div>
+                              
+                              <div className="w-full md:w-[33%] p-4 border-r border-white/20 flex flex-col">
+                                 <textarea value={shot.motionPrompt} onChange={(e) => handleMotionPromptManualEdit(index, e.target.value)} className="text-[11px] text-gray-300 bg-transparent w-full h-full min-h-[120px] resize-none border border-transparent focus:border-white/10" />
+                                 <div className="mt-auto bg-[#111] p-2 rounded border border-white/10 mt-4">
+                                    <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase">Generate Video</label>
+                                    <div className="flex gap-2">
+                                      <select value={currentVideoEngine} onChange={(e) => handleVideoEngineChange(index, e.target.value)} className="bg-[#050505] border border-white/20 rounded p-2 text-[10px] text-white w-1/2">
+                                        <option value="Veo3 Lite">Veo3 Lite</option>
+                                        <option value="Gemini Omni">Gemini Omni</option>
+                                      </select>
+                                      <button onClick={() => generateVideo(index)} disabled={!shot.imageUrl} className={`w-1/2 font-black py-2 rounded-sm text-[10px] ${!shot.imageUrl ? 'bg-gray-800 text-gray-500' : 'bg-[#FFC000] text-black hover:bg-yellow-500'}`}>GENERATE</button>
+                                    </div>
+                                 </div>
+                              </div>
+
+                              <div className="w-full md:w-[25%] p-4 border-r border-white/20 bg-[#050505] flex flex-col">
+                                 <textarea value={shot.imagePrompt} onChange={(e) => handleImagePromptManualEdit(index, e.target.value)} className="text-[10px] text-gray-200 bg-[#2a0505] border border-red-600/60 w-full min-h-[120px] resize-none p-2 mb-2" />
+                                 <button onClick={() => generateImage(index)} className="w-full font-black py-2.5 rounded-sm bg-transparent border border-[#FFC000] text-[#FFC000] hover:bg-[#FFC000] hover:text-black mt-auto text-[10px]">GENERATE IMAGE</button>
+                              </div>
+
+                              <div className="w-full md:w-[30%] bg-[#000] p-1 flex items-center justify-center relative group">
+                                 {shot.imageUrl ? (
+                                    <div className="relative w-full h-full min-h-[180px] bg-black">
+                                       {shot.videoUrl && showVideoPreview[index] ? (
+                                          <video src={shot.videoUrl} className="w-full h-full object-cover" controls autoPlay loop muted />
+                                       ) : (
+                                          <img src={shot.imageUrl} className="w-full h-full object-cover cursor-pointer" onClick={() => setPreviewImage({ url: shot.imageUrl })} />
+                                       )}
+                                       {shot.videoUrl && shot.imageUrl && (
+                                          <button onClick={() => setShowVideoPreview(prev => ({ ...prev, [index]: !prev[index] }))} className="absolute bottom-2 right-2 bg-black/60 text-white text-[9px] px-2 py-1 rounded border border-white/20">Toggle Video</button>
+                                        )}
+                                    </div>
+                                 ) : (
+                                    <div className="w-full h-full min-h-[180px] bg-[#050505] border border-white/5 flex items-center justify-center"><span className="text-[10px] text-gray-600">NO RESULT</span></div>
+                                 )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                </div>
+              </main>
+
+              {previewImage && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4" onClick={() => setPreviewImage(null)}>
+                    <img src={previewImage.url} className="w-full h-auto max-h-[80vh] object-contain" />
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
