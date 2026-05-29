@@ -6,10 +6,10 @@ export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Environment Variables Vercel' });
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
 
-    // KITA KUNCI DI MODEL PALING AMAN DAN PASTI JALAN: gemini-1.5-flash
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    // MENGGUNAKAN NAMA MODEL PERSIS DARI CURL GOOGLE STUDIO KAMU
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
 
     try {
         const response = await fetch(url, {
@@ -24,5 +24,3 @@ export default async function handler(req, res) {
         res.status(200).json(data);
     } catch (error) { res.status(500).json({ error: error.message }); }
 }
-
-
