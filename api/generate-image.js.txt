@@ -1,0 +1,42 @@
+export const config = {
+    api: {
+        bodyParser: {
+            sizeLimit: '4mb', // Sangat penting karena kita mengirim file Base64 gambar wajah
+        },
+    },
+};
+
+export default async function handler(req, res) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    // Mengambil API Key dari Environment Variable Vercel yang SAMA
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+        return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
+    }
+
+    // URL Google API (Model Image)
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`;
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body) // Teruskan data gambar dan prompt dari frontend
+        });
+        
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error?.message || 'Google API Error');
+        }
+
+        res.status(200).json(data);
+    } catch (error) {
+        console.error('Backend Image Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+}
