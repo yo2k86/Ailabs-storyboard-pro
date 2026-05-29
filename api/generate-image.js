@@ -8,8 +8,8 @@ export default async function handler(req, res) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
 
-    // MENGGUNAKAN VERSI EXPERIMENTAL UNTUK OUTPUT GAMBAR: gemini-2.0-flash-exp
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`;
+    // MENGGUNAKAN NAMA MODEL PERSIS DARI CURL GOOGLE STUDIO KAMU UNTUK GAMBAR
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
 
     try {
         const response = await fetch(url, {
