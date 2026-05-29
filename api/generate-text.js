@@ -1,43 +1,26 @@
 export const config = {
-    api: {
-        bodyParser: {
-            sizeLimit: '4mb', // Berjaga-jaga jika payload besar
-        },
-    },
+    api: { bodyParser: { sizeLimit: '4mb' } },
 };
 
 export default async function handler(req, res) {
-    // Hanya izinkan method POST
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    // Mengambil API Key dari Environment Variable Vercel
     const apiKey = process.env.GEMINI_API_KEY;
-    
-    if (!apiKey) {
-        return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
-    }
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Environment Variables Vercel' });
 
-    // URL Google API (Model Text)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    // MODEL DIPERBARUI KE VERSI PUBLIK: gemini-2.0-flash
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
     try {
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(req.body) // Teruskan body dari frontend
+            body: JSON.stringify(req.body) 
         });
         
         const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error?.message || 'Google API Error');
-        }
+        if (!response.ok) throw new Error(data.error?.message || 'Google API Error');
 
         res.status(200).json(data);
-    } catch (error) {
-        console.error('Backend Text Error:', error);
-        res.status(500).json({ error: error.message });
-    }
+    } catch (error) { res.status(500).json({ error: error.message }); }
 }
