@@ -25,6 +25,4 @@ export default async function handler(req, res) {
     } catch (error) { res.status(500).json({ error: error.message }); }
 }
 
-Jika kamu mengalami error yang mirip pada saat melakukan **Generate Image**, silakan ubah juga kata-kata model di `api/generate-image.js` menjadi `gemini-1.5-flash`.
 
-Simpan file tersebut dan jangan lupa lakukan **Redeploy** di Vercel ya boss, agar server membaca model `1.5-flash` yang baru! 🚀
