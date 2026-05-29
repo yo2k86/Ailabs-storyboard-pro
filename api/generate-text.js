@@ -8,8 +8,8 @@ export default async function handler(req, res) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Environment Variables Vercel' });
 
-    // MODEL DIPERBARUI KE VERSI PUBLIK: gemini-2.0-flash
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    // UPGRADE KE KASTA TERTINGGI: gemini-1.5-pro (Model Flagship Publik Paling Cerdas)
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`;
 
     try {
         const response = await fetch(url, {
