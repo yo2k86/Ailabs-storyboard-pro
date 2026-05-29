@@ -10,9 +10,9 @@ export default async function handler(req, res) {
 
     const { image, motionPrompt, engine } = req.body;
     
-    // MENGGUNAKAN MODEL VEO/GEMINI PUBLIK UNTUK VIDEO
-    let modelName = "veo-2.0-generate-001"; 
-    if (engine === "Gemini Omni") modelName = "gemini-2.0-flash-exp";
+    // MENGGUNAKAN MODEL PUBLIK YANG DIJAMIN TERSEDIA
+    let modelName = "veo-2.0-generate-001"; // Engine Veo
+    if (engine === "Gemini Omni") modelName = "gemini-1.5-flash"; // Fallback ke model paling aman
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
