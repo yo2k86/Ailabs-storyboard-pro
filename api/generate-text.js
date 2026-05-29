@@ -1,26 +1,55 @@
-export const config = {
-    api: { bodyParser: { sizeLimit: '4mb' } },
-};
-
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  // Hanya menerima metode POST
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
+  // Mengambil API Key dari Environment Variable Vercel
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'OPENROUTER_API_KEY belum dikonfigurasi di Vercel.' });
+  }
 
-    // MENGGUNAKAN NAMA MODEL PERSIS DARI CURL GOOGLE STUDIO KAMU
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
+  // Menggunakan DeepSeek V4 Flash sebagai default jika OPENROUTER_MODEL tidak diset di Vercel
+  const model = process.env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash:free';
 
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(req.body) 
-        });
-        
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || 'Google API Error');
+  try {
+    // Menangkap data dari frontend (index.html)
+    const { prompt, systemInstruction } = req.body;
 
-        res.status(200).json(data);
-    } catch (error) { res.status(500).json({ error: error.message }); }
+    // Memanggil API OpenRouter
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://ai-storyboard.vercel.app', // Bebas, info untuk OpenRouter
+        'X-Title': 'AI Storyboard App',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt }
+        ],
+        // DeepSeek mensupport mode JSON untuk memastikan outputnya bisa dibaca sistem
+        response_format: { type: "json_object" }
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error?.message || 'Gagal menghubungi OpenRouter API');
+    }
+
+    const data = await response.json();
+    const textResponse = data.choices[0].message.content;
+
+    // Mengembalikan hasil teks ke frontend
+    res.status(200).json({ text: textResponse });
+
+  } catch (error) {
+    console.error('Backend Error:', error);
+    res.status(500).json({ error: error.message });
+  }
 }
