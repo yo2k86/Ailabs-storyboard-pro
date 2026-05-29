@@ -4,16 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Storyboard Cinematic</title>
-    <!-- Tailwind CSS (CDN) -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Babel (Untuk menerjemahkan React JSX langsung di Browser) -->
+    <!-- Babel compiler untuk React Standalone -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body class="bg-black text-white selection:bg-[#FFC000]/30 overflow-x-hidden">
-    <!-- Tempat Aplikasi React akan muncul -->
+<body class="bg-[#000] text-gray-200 selection:bg-[#FFC000]/30 overflow-x-hidden">
+    
     <div id="root"></div>
 
-    <!-- Kode Utama Aplikasi -->
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
@@ -37,7 +36,7 @@
           "Babi Ngepet": "A monstrous, demonic boar with glowing red eyes, covered in unnatural dark, bristly fur, emanating a dark aura, associated with dark magic and greed."
         };
 
-        // === HELPER UNTUK INDEXEDDB ===
+        // === HELPER UNTUK INDEXEDDB (Menghindari limit 5MB LocalStorage) ===
         const DB_NAME = 'AilabsDB';
         const STORE_NAME = 'projects';
 
@@ -65,7 +64,9 @@
               request.onsuccess = () => resolve();
               request.onerror = () => reject(request.error);
             });
-          } catch (err) { console.error("IDB Save Error:", err); }
+          } catch (err) {
+            console.error("IDB Save Error:", err);
+          }
         };
 
         const getFromIDB = async (key) => {
@@ -78,38 +79,50 @@
               request.onsuccess = () => resolve(request.result);
               request.onerror = () => reject(request.error);
             });
-          } catch (err) { return null; }
+          } catch (err) {
+            console.error("IDB Get Error:", err);
+            return null;
+          }
         };
 
+        // === FUNGSI KOMPRESI GAMBAR (UNTUK THUMBNAIL FIREBASE) ===
         const compressImageBase64 = (base64Str, maxWidth = 150) => {
           return new Promise((resolve) => {
-            if (!base64Str) { resolve(null); return; }
+            if (!base64Str) {
+              resolve(null);
+              return;
+            }
             const img = new Image();
             img.src = base64Str;
             img.onload = () => {
               const canvas = document.createElement('canvas');
               const scaleSize = maxWidth / img.width;
-              canvas.width = maxWidth; canvas.height = img.height * scaleSize;
+              canvas.width = maxWidth;
+              canvas.height = img.height * scaleSize;
+              
               const ctx = canvas.getContext('2d');
               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              
               resolve(canvas.toDataURL('image/jpeg', 0.3));
             };
-            img.onerror = () => resolve(null);
+            img.onerror = () => {
+              console.error("Gagal mengompres gambar");
+              resolve(null);
+            };
           });
         };
 
+        // === URL GOOGLE APPS SCRIPT ===
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwgYCCYXKE1RPLdUCeq3Lv7rqGaOPkl19P9LmsiXDFuAWNpgtlHI2-NWoJ85v10QuDVOw/exec";
 
-        // === FIREBASE INIT SETUP AMAN ===
+        // === FIREBASE INIT ===
         let app, auth, db;
         try {
             let firebaseConfig;
-            // Gunakan fallback jika tidak ada injected config (Misal sedang jalan di Vercel)
             if (typeof __firebase_config !== 'undefined' && __firebase_config) {
                 firebaseConfig = JSON.parse(__firebase_config);
             } else {
-                // TODO: Jika kamu mau fitur Cloud Save (Histori) jalan di Vercel, 
-                // masukkan config dari Firebase Console kamu di sini:
+                // Isi dengan config Firebase-mu agar fitur cloud history berjalan di Vercel
                 firebaseConfig = {
                     apiKey: "YOUR_API_KEY_HERE",
                     authDomain: "your-app.firebaseapp.com",
@@ -122,11 +135,12 @@
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-        } catch(e) { console.warn("Firebase belum disetting dengan benar, fitur cloud akan dinonaktifkan.", e); }
-        
+        } catch(e) { console.warn("Firebase config is missing or invalid.", e); }
+
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
         const App = () => {
+          // --- STATE UNTUK SISTEM LOGIN & AKSES SPREADSHEET ---
           const [loginEmail, setLoginEmail] = useState("");
           const [isLoggedIn, setIsLoggedIn] = useState(false);
           const [hasAccess, setHasAccess] = useState(false);
@@ -144,6 +158,7 @@
           const [aspectRatio, setAspectRatio] = useState("16:9"); 
           const [storyboard, setStoryboard] = useState([]);
           
+          // --- STATE BANK FOTO GLOBAL & ASET ---
           const [globalFaceRefs, setGlobalFaceRefs] = useState({ A: [], B: [], C: [], D: [], E: [] });
           const [additionalAssetRefs, setAdditionalAssetRefs] = useState({ 1: [], 2: [], 3: [], 4: [], 5: [] });
           const [selectedGhosts, setSelectedGhosts] = useState([]);
@@ -152,15 +167,21 @@
           const [isExtendingStoryboard, setIsExtendingStoryboard] = useState(false); 
           const [extendPartCount, setExtendPartCount] = useState(2); 
           const [generatingImages, setGeneratingImages] = useState({}); 
+          
+          // --- STATE VIDEO (Fitur Baru) ---
           const [generatingVideos, setGeneratingVideos] = useState({});
           const [videoEngines, setVideoEngines] = useState({}); 
-          
+          const [showVideoPreview, setShowVideoPreview] = useState({});
+          const [previewVideo, setPreviewVideo] = useState(null); 
+
+          const [revisingImage, setRevisingImage] = useState({}); 
+          const [revisingMotion, setRevisingMotion] = useState({}); 
           const [isGeneratingAllImages, setIsGeneratingAllImages] = useState(false);
+          
           const [imageRevisionInputs, setImageRevisionInputs] = useState({});
           const [motionRevisionInputs, setMotionRevisionInputs] = useState({});
 
           const [previewImage, setPreviewImage] = useState(null);
-          const [previewVideo, setPreviewVideo] = useState(null); 
           const [error, setError] = useState("");
 
           const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -168,21 +189,20 @@
           const [historySuccessMsg, setHistorySuccessMsg] = useState("");
 
           const [copiedStates, setCopiedStates] = useState({});
-          const [showVideoPreview, setShowVideoPreview] = useState({});
           const [user, setUser] = useState(null);
 
           const bangProLogoUrl = "https://i.ibb.co.com/pvp9g29x/Whats-App-Image-2025-12-25-at-02-28-36.jpg"; 
 
           useEffect(() => {
             const initAuth = async () => {
-              if(!auth) return; // Skip if Firebase is not setup
+              if(!auth) return;
               try {
-                  if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                  } else {
-                    await signInAnonymously(auth);
-                  }
-              } catch(e) {}
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                  await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                  await signInAnonymously(auth);
+                }
+              } catch(e){}
             };
             initAuth();
             if(auth) {
@@ -197,10 +217,15 @@
               try {
                 const parsed = JSON.parse(savedSession);
                 if (parsed && parsed.email) {
-                  setLoginEmail(parsed.email); setActiveEmail(parsed.email); setActiveUsername(parsed.username);
-                  setIsLoggedIn(true); setHasAccess(true);
+                  setLoginEmail(parsed.email);
+                  setActiveEmail(parsed.email);
+                  setActiveUsername(parsed.username);
+                  setIsLoggedIn(true);
+                  setHasAccess(true);
                 }
-              } catch (e) { console.error(e); }
+              } catch (e) {
+                console.error("Gagal memuat sesi:", e);
+              }
             }
           }, []);
 
@@ -215,13 +240,16 @@
                 if (parsed.isAlternatingCharacters !== undefined) setIsAlternatingCharacters(parsed.isAlternatingCharacters);
                 if (parsed.partCount) setPartCount(parsed.partCount);
                 if (parsed.aspectRatio) setAspectRatio(parsed.aspectRatio);
-                if (parsed.storyboard) setStoryboard(parsed.storyboard);
+                if (parsed.storyboard && Array.isArray(parsed.storyboard)) setStoryboard(parsed.storyboard);
                 if (parsed.selectedGhosts) setSelectedGhosts(parsed.selectedGhosts);
                 if (parsed.globalFaceRefs) setGlobalFaceRefs(parsed.globalFaceRefs);
-                if (parsed.additionalAssetRefs) setAdditionalAssetRefs(parsed.additionalAssetRefs);
+                if (parsed.additionalAssetRefs) {
+                  if (Array.isArray(parsed.additionalAssetRefs)) setAdditionalAssetRefs({ 1: parsed.additionalAssetRefs, 2: [], 3: [], 4: [], 5: [] });
+                  else setAdditionalAssetRefs(parsed.additionalAssetRefs);
+                }
                 if (parsed.imageRevisionInputs) setImageRevisionInputs(parsed.imageRevisionInputs);
                 if (parsed.motionRevisionInputs) setMotionRevisionInputs(parsed.motionRevisionInputs);
-                if (parsed.videoEngines) setVideoEngines(parsed.videoEngines); 
+                if (parsed.videoEngines) setVideoEngines(parsed.videoEngines);
               }
             };
             loadDraft();
@@ -242,7 +270,7 @@
                 historyData.sort((a, b) => b.timestamp - a.timestamp);
                 setProjectHistory(historyData);
               },
-              (error) => console.error("Gagal memuat histori:", error)
+              (error) => console.error("Gagal memuat histori dari Firebase:", error)
             );
             return () => unsubscribe();
           }, [user]);
@@ -257,9 +285,12 @@
               if (data.success) {
                 setIsLoggedIn(true); setHasAccess(true); setActiveUsername(data.username); setActiveEmail(data.email);
                 localStorage.setItem("ailabs_session", JSON.stringify({ email: data.email, username: data.username }));
-              } else { setLoginError(data.message || "Akses Ditolak! Email tidak cocok."); }
-            } catch (err) { setLoginError("Gagal terhubung ke server database."); } 
-            finally { setIsCheckingAccess(false); }
+              } else {
+                setLoginError(data.message || "Akses Ditolak! Email tidak cocok.");
+              }
+            } catch (err) {
+              setLoginError("Gagal terhubung ke server database.");
+            } finally { setIsCheckingAccess(false); }
           };
 
           const handleLogout = () => {
@@ -268,32 +299,42 @@
           };
 
           const saveToHistory = async () => {
-            if (!user || !db) { setError("Fitur Histori Cloud tidak aktif karena Firebase Config kosong di Vercel."); return; }
-            if (!idea.trim() && storyboard.length === 0) { setError("Isi ide atau buat storyboard dulu."); return; }
+            if (!user || !db) { setError("Firebase belum siap. Tunggu sebentar."); return; }
+            if (!idea.trim() && storyboard.length === 0) { setError("Isi ide atau buat storyboard dulu sebelum menyimpan ke histori."); return; }
 
             setError(""); setHistorySuccessMsg("Mengompres gambar untuk Cloud... Mohon tunggu.");
+
             const safeStoryboard = await Promise.all(storyboard.map(async (s) => {
               const thumbnail = s.imageUrl ? await compressImageBase64(s.imageUrl, 150) : null;
-              return { shotNumber: s.shotNumber || "Scene", imagePrompt: s.imagePrompt || "", motionPrompt: s.motionPrompt || "", imageUrl: thumbnail, videoUrl: s.videoUrl || null };
+              return {
+                shotNumber: s.shotNumber || "Scene",
+                imagePrompt: s.imagePrompt || "",
+                motionPrompt: s.motionPrompt || "",
+                imageUrl: thumbnail,
+                videoUrl: s.videoUrl || null
+              };
             }));
 
             const timestamp = Date.now();
             const historyId = timestamp.toString();
+
             const fullEntry = { timestamp, date: new Date().toLocaleString('id-ID'), idea, sceneRevision, genre, partCount, characterCount, aspectRatio, storyboard: safeStoryboard };
 
             try {
               const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'history', historyId);
               await setDoc(docRef, fullEntry);
-              setError(""); setHistorySuccessMsg("Disimpan ke Cloud!");
+              setError(""); setHistorySuccessMsg("Disimpan ke Cloud! (Gambar diamankan dalam versi Thumbnail Mini)");
               setTimeout(() => setHistorySuccessMsg(""), 4000);
-            } catch (e) { setError("🚨 GAGAL MENYIMPAN KE CLOUD!"); }
+            } catch (e) {
+              setError("🚨 GAGAL MENYIMPAN KE CLOUD! Periksa koneksi atau ukuran data masih terlalu besar.");
+            }
           };
 
           const loadFromHistory = (entry) => {
             setIdea(entry.idea || ""); setSceneRevision(entry.sceneRevision || ""); setGenre(entry.genre || "Action High-Octane"); 
             setCharacterCount(entry.characterCount || "Otomatis"); setPartCount(entry.partCount || 2); setAspectRatio(entry.aspectRatio || "16:9"); 
             setStoryboard(entry.storyboard || []); setImageRevisionInputs(entry.imageRevisionInputs || {}); setMotionRevisionInputs(entry.motionRevisionInputs || {});
-            setVideoEngines({}); 
+            setVideoEngines({});
             setIsHistoryOpen(false); setHistorySuccessMsg("Proyek lama berhasil dimuat dari Cloud!"); setTimeout(() => setHistorySuccessMsg(""), 3000);
           };
 
@@ -308,8 +349,8 @@
               try {
                 const response = await fetch(url, options);
                 if (!response.ok) {
-                    const errData = await response.json();
-                    throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+                    const errorData = await response.json().catch(()=>({}));
+                    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
                 }
                 return await response.json();
               } catch (err) {
@@ -334,10 +375,16 @@
               const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
               return { ...prev, [char]: newRefs };
             });
+            event.target.value = '';
           };
 
-          const removeGlobalFace = (char, index) => { setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs.splice(index, 1); return { ...prev, [char]: newRefs }; }); };
-          const updateGlobalFaceLabel = (char, index, newValue) => { setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [char]: newRefs }; }); };
+          const removeGlobalFace = (char, index) => {
+            setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs.splice(index, 1); return { ...prev, [char]: newRefs }; });
+          };
+
+          const updateGlobalFaceLabel = (char, index, newValue) => {
+            setGlobalFaceRefs(prev => { const newRefs = [...(prev[char] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [char]: newRefs }; });
+          };
 
           const handleAdditionalAssetUpload = async (slotId, event) => {
             const files = Array.from(event.target.files);
@@ -354,10 +401,16 @@
               const newRefs = [...currentRefs, ...newRefsToAdd].slice(0, 5); 
               return { ...prev, [slotId]: newRefs };
             });
+            event.target.value = '';
           };
 
-          const removeAdditionalAsset = (slotId, index) => { setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs.splice(index, 1); return { ...prev, [slotId]: newRefs }; }); };
-          const updateAdditionalAssetLabel = (slotId, index, newValue) => { setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [slotId]: newRefs }; }); };
+          const removeAdditionalAsset = (slotId, index) => {
+            setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs.splice(index, 1); return { ...prev, [slotId]: newRefs }; });
+          };
+
+          const updateAdditionalAssetLabel = (slotId, index, newValue) => {
+            setAdditionalAssetRefs(prev => { const newRefs = [...(prev[slotId] || [])]; newRefs[index] = { ...newRefs[index], partLabel: newValue }; return { ...prev, [slotId]: newRefs }; });
+          };
 
           const handleLocalFaceUpload = async (shotIndex, event) => {
             const files = Array.from(event.target.files);
@@ -368,13 +421,19 @@
               reader.readAsDataURL(file);
             });
             const processedFiles = await Promise.all(files.map(readAsDataURL));
+            
             setStoryboard(prev => {
               const newBoard = [...prev]; const shot = newBoard[shotIndex];
               let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
               currentRefs = [...currentRefs, ...processedFiles].slice(0, 5); 
-              newBoard[shotIndex] = { ...shot, needsFaceReference: true, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null, faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null };
+              
+              newBoard[shotIndex] = {
+                ...shot, needsFaceReference: true, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null,
+                faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null,
+              };
               return newBoard;
             });
+            event.target.value = '';
           };
 
           const removeLocalFace = (shotIndex, refIndex) => {
@@ -382,15 +441,29 @@
               const newBoard = [...prev]; const shot = newBoard[shotIndex];
               let currentRefs = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
               currentRefs.splice(refIndex, 1);
-              newBoard[shotIndex] = { ...shot, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null, faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null };
+              newBoard[shotIndex] = {
+                ...shot, faceReference1: currentRefs[0] || null, faceReference2: currentRefs[1] || null,
+                faceReference3: currentRefs[2] || null, faceReference4: currentRefs[3] || null, faceReference5: currentRefs[4] || null,
+              };
               return newBoard;
             });
           };
 
-          const handleGhostToggle = (ghostKey) => { setSelectedGhosts(prev => prev.includes(ghostKey) ? prev.filter(g => g !== ghostKey) : [...prev, ghostKey]); };
-          const handleImagePromptManualEdit = (index, value) => { setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], imagePrompt: value }; return arr; }); };
-          const handleMotionPromptManualEdit = (index, value) => { setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], motionPrompt: value }; return arr; }); };
-          const handleVideoEngineChange = (index, value) => { setVideoEngines(prev => ({ ...prev, [index]: value })); };
+          const handleGhostToggle = (ghostKey) => {
+            setSelectedGhosts(prev => prev.includes(ghostKey) ? prev.filter(g => g !== ghostKey) : [...prev, ghostKey]);
+          };
+
+          const handleImagePromptManualEdit = (index, value) => {
+            setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], imagePrompt: value }; return arr; });
+          };
+
+          const handleMotionPromptManualEdit = (index, value) => {
+            setStoryboard(prev => { const arr = [...prev]; arr[index] = { ...arr[index], motionPrompt: value }; return arr; });
+          };
+
+          const handleVideoEngineChange = (index, value) => {
+            setVideoEngines(prev => ({ ...prev, [index]: value }));
+          };
 
           const getSystemPromptText = () => {
             let charInstruction = "";
@@ -451,15 +524,15 @@
             5. hasFemaleCharacter: BOOLEAN.
             6. imagePrompt: Single, highly detailed paragraph. MUST include the Master Character/Environment strings.
 
-        [IF needsFaceReference IS true, START EXACTLY WITH THIS LINE]:
-        **Kunci Wajah Aktif**: Wajah subjek HARUS identik dengan foto referensi. Pertahankan semua fitur wajah asli tanpa perubahan.
+[IF needsFaceReference IS true, START EXACTLY WITH THIS LINE]:
+**Kunci Wajah Aktif**: Wajah subjek HARUS identik dengan foto referensi. Pertahankan semua fitur wajah asli tanpa perubahan.
 
-        [ENGLISH DESCRIPTION FORMAT]:
-        IF CHARACTERS ARE VISIBLE:
-        [Shot type and camera angle]. [MASTER CHARACTER STRING]. [Describe specific action or pose]. The setting is [MASTER ENVIRONMENT STRING: EXACT identical location]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
+[ENGLISH DESCRIPTION FORMAT]:
+IF CHARACTERS ARE VISIBLE:
+[Shot type and camera angle]. [MASTER CHARACTER STRING]. [Describe specific action or pose]. The setting is [MASTER ENVIRONMENT STRING: EXACT identical location]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
 
-        IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
-        [Shot type: EXTREME CLOSE UP / WIDE ESTABLISHING]. [Describe the specific object]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
+IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
+[Shot type: EXTREME CLOSE UP / WIDE ESTABLISHING]. [Describe the specific object]. The setting is [MASTER ENVIRONMENT STRING]. The lighting is [specific lighting details]. The overall cinematic aesthetic is STRICTLY ${genre}.
 
             7. motionPrompt: A highly detailed motion prompt. Follow the exact structure below. 
 
@@ -506,7 +579,8 @@
             };
 
             try {
-              const url = '/api/generate-text'; 
+              // Memanggil backend vercel
+              const url = '/api/generate-text';
               const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
               const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
               
@@ -557,7 +631,8 @@
             };
 
             try {
-              const url = '/api/generate-text'; 
+              // Memanggil backend vercel
+              const url = '/api/generate-text';
               const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
               const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
               
@@ -602,7 +677,9 @@
               const finalImagePrompt = `[CINEMATIC GENRE: ${genre}] [CONSISTENT SCENE STRICT ENFORCEMENT] ${shot.imagePrompt} ${revisionText} ${ghostRealismAddon} ${femaleEnhancer} ${realismEnhancer} ${antiCgiAddon} EXTREMELY IMPORTANT: The output image MUST be exactly in ${aspectRatio} aspect ratio format.`;
 
               const hasFaceRef = shot.faceReference1 || shot.faceReference2 || shot.faceReference3 || shot.faceReference4 || shot.faceReference5;
-              const url = '/api/generate-image'; 
+              
+              // Memanggil backend vercel
+              const url = '/api/generate-image';
               const apiParts = [];
 
               let baseText = "";
@@ -662,6 +739,7 @@
             setGeneratingVideos(prev => ({ ...prev, [index]: true }));
 
             try {
+              // Memanggil backend vercel
               const response = await fetch('/api/generate-video', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -725,7 +803,7 @@
 
           if (!isLoggedIn || !hasAccess) {
             return (
-              <div className="min-h-screen bg-black text-gray-200 font-sans flex items-center justify-center relative overflow-hidden">
+              <div className="min-h-screen bg-black text-gray-200 font-sans selection:bg-[#FFC000]/30 flex items-center justify-center relative overflow-hidden">
                 <div className="relative z-10 bg-[#0a0a0a] border border-white/20 rounded-xl p-8 md:p-10 shadow-2xl w-[90%] max-w-md overflow-hidden">
                   <div className="flex flex-col items-center mb-8 relative z-10">
                     <img src={bangProLogoUrl} alt="Bang Pro" className="h-16 mb-4 object-contain" />
@@ -753,7 +831,7 @@
           }
 
           return (
-            <div className="min-h-screen bg-[#000000] text-gray-200 font-sans relative">
+            <div className="min-h-screen bg-[#000000] text-gray-200 font-sans selection:bg-[#FFC000]/30 overflow-x-hidden relative">
               <nav className="bg-[#000] border-b border-white/10 flex justify-between items-center px-4 py-2">
                  <div className="flex items-center gap-2">
                     <button onClick={() => setIsHistoryOpen(true)} className="text-[#FFC000] border border-[#FFC000]/30 hover:bg-[#FFC000]/10 px-3 py-1 rounded text-[10px] font-bold tracking-widest uppercase transition-all">
@@ -773,6 +851,9 @@
                  <div className="flex flex-col items-start mb-4 md:mb-0">
                     <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-white tracking-tighter uppercase leading-none">AI STORYBOARD</h1>
                     <h2 className="text-3xl md:text-4xl lg:text-5xl font-black text-[#FFC000] tracking-tighter uppercase leading-none">CINEMATIC ACTION</h2>
+                    <p className="mt-3 text-[11px] md:text-[14px] font-medium text-gray-300 tracking-[0.3em] uppercase flex items-center">
+                      STORYBOARD <span className="mx-2 text-white">→</span> SHOT <span className="mx-2 text-white">→</span> VIDEO RESULT
+                    </p>
                  </div>
                  <div className="flex flex-col items-end">
                     <div className="bg-white px-1 py-1 rounded-sm border border-gray-800 flex flex-col items-center">
@@ -782,45 +863,106 @@
               </header>
 
               <main className="max-w-full mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10 bg-[#000]">
-                {/* KOLOM KIRI */}
+                
+                {/* KOLOM KIRI: KONFIGURASI ADEGAN */}
                 <div className="lg:col-span-3 space-y-4">
                   <div className="bg-[#050505] border border-white/20 rounded p-5 sticky top-6">
-                    <h2 className="text-[12px] font-bold text-white mb-5 uppercase tracking-widest border-b border-white/10 pb-2">Konfigurasi Adegan</h2>
+                    <h2 className="text-[12px] font-bold text-white mb-5 uppercase tracking-widest border-b border-white/10 pb-2">
+                      Konfigurasi Adegan
+                    </h2>
                     
                     <div className="mb-4">
                       <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Genre Sinematik</label>
-                      <select value={genre} onChange={(e) => setGenre(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
-                        <option value="Action High-Octane">Action High-Octane</option>
-                        <option value="Cyberpunk Noir">Cyberpunk Noir</option>
-                        <option value="Sci-Fi Thriller">Sci-Fi Thriller</option>
-                        <option value="Epic Fantasy">Epic Fantasy</option>
-                        <option value="Horror Suspense">Horror Suspense</option>
-                        <option value="Indonesian Horror (Mistik Lokal Nusantara)">Horor Indonesia</option>
+                      <select 
+                        value={genre} onChange={(e) => setGenre(e.target.value)}
+                        className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] transition-all uppercase"
+                      >
+                        <option value="Action High-Octane">Action High-Octane (Aksi Laga Cepat)</option>
+                        <option value="Cyberpunk Noir">Cyberpunk Noir (Masa Depan Neon Gelap)</option>
+                        <option value="Sci-Fi Thriller">Sci-Fi Thriller (Fiksi Ilmiah Menegangkan)</option>
+                        <option value="Epic Fantasy">Epic Fantasy (Fantasi Epik Kerajaan Sihir)</option>
+                        <option value="Horror Suspense">Horror Suspense (Horor Ketegangan Misteri)</option>
+                        <option value="Indonesian Horror (Mistik Lokal Nusantara)">Horor Indonesia (Mistik Lokal Nusantara)</option>
+                        <option value="Neo-Noir Crime">Neo-Noir Crime (Kriminal Gelap Estetik Modern)</option>
+                        <option value="Post-Apocalyptic Survival">Post-Apocalyptic Survival (Bertahan Hidup Pasca Kiamat)</option>
+                        <option value="Historical Drama">Historical Drama (Drama Sejarah Klasik)</option>
+                        <option value="Western">Western (Koboi Liar Klasik)</option>
+                        <option value="Space Opera">Space Opera (Petualangan Luar Angkasa)</option>
+                        <option value="Martial Arts / Wuxia">Martial Arts / Wuxia (Seni Bela Diri & Silat)</option>
+                        <option value="Steampunk">Steampunk (Masa Lalu Fiksi Mesin Uap)</option>
+                        <option value="War Epic">War Epic (Perang Skala Besar / Medan Tempur)</option>
+                        <option value="Psychological Thriller">Psychological Thriller (Ketegangan Psikologis)</option>
+                        <option value="Emotional Drama / Slice of Life">Emotional Drama / Slice of Life (Drama Emosional Kehidupan)</option>
+                        <option value="Romantic Drama">Romantic Drama (Drama Romantis Percintaan)</option>
                       </select>
                     </div>
 
                     <div className="mb-4 grid grid-cols-2 gap-3">
                        <div>
                           <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Karakter</label>
-                          <select value={characterCount} onChange={(e) => setCharacterCount(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
-                             <option value="1">1 Karakter</option><option value="2">2 Karakter</option><option value="Otomatis">Otomatis</option>
+                          <select 
+                             value={characterCount} onChange={(e) => setCharacterCount(e.target.value)}
+                             className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
+                          >
+                             <option value="1">1 Karakter</option>
+                             <option value="2">2 Karakter</option>
+                             <option value="Otomatis">Otomatis</option>
                           </select>
+                          {characterCount !== "1" && (
+                             <div className="mt-2 flex items-center gap-2 px-1">
+                                <input type="checkbox" checked={isAlternatingCharacters} onChange={(e) => setIsAlternatingCharacters(e.target.checked)} className="accent-[#FFC000] w-3 h-3 cursor-pointer" />
+                                <span className="text-[8px] text-gray-400 font-bold uppercase tracking-widest cursor-pointer hover:text-white transition-colors" onClick={() => setIsAlternatingCharacters(!isAlternatingCharacters)}>Fokus Bergantian</span>
+                             </div>
+                          )}
                        </div>
                        <div>
                           <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Rasio</label>
-                          <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
-                             <option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option>
+                          <select 
+                             value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}
+                             className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
+                          >
+                             <option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="21:9">21:9</option>
                           </select>
                        </div>
                     </div>
 
                     <div className="mb-5">
                       <label className="block text-[10px] text-gray-400 font-bold mb-1.5 uppercase tracking-widest">Timeline Shots</label>
-                      <select value={partCount} onChange={(e) => setPartCount(e.target.value === "Otomatis" ? "Otomatis" : Number(e.target.value))} className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase">
-                        <option value={1}>1 Shot</option><option value={2}>2 Shots</option><option value={3}>3 Shots</option><option value="Otomatis">Auto</option>
+                      <select 
+                        value={partCount} onChange={(e) => setPartCount(e.target.value === "Otomatis" ? "Otomatis" : Number(e.target.value))}
+                        className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase"
+                      >
+                        <option value={1}>1 Shot</option><option value={2}>2 Shots</option><option value={3}>3 Shots</option>
+                        <option value={4}>4 Shots</option><option value={5}>5 Shots</option><option value="Otomatis">Auto</option>
                       </select>
                     </div>
 
+                    {/* SELEKSI HANTU LOKAL JIKA GENRE HOROR INDONESIA */}
+                    {genre === "Indonesian Horror (Mistik Lokal Nusantara)" && (
+                      <div className="mb-5 bg-[#1a0505] p-3 rounded border border-red-900/50">
+                        <label className="block text-[10px] text-red-500 font-bold mb-2 uppercase tracking-widest text-center border-b border-red-900/50 pb-2">
+                          Pilih Entitas Mistik (Hantu Lokal)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2 mt-3">
+                           {Object.keys(GHOST_PROMPTS).map(ghost => (
+                              <label key={ghost} className={`flex items-center justify-center p-2 rounded border cursor-pointer transition-all ${selectedGhosts.includes(ghost) ? 'bg-red-900/60 border-red-500' : 'bg-black border-white/10 hover:border-red-500/50'}`}>
+                                 <input
+                                   type="checkbox"
+                                   className="hidden"
+                                   checked={selectedGhosts.includes(ghost)}
+                                   onChange={() => handleGhostToggle(ghost)}
+                                 />
+                                 <span className={`text-[9px] font-bold uppercase tracking-widest text-center ${selectedGhosts.includes(ghost) ? 'text-red-400' : 'text-gray-400'}`}>
+                                   {ghost}
+                                 </span>
+                              </label>
+                           ))}
+                        </div>
+                        <p className="text-[8px] text-gray-500 mt-3 text-center italic">*Entitas yang dipilih akan otomatis mendapatkan deskripsi visual akurat di prompt AI.</p>
+                      </div>
+                    )}
+
+                    {/* FACE LOCK */}
                     <div className="mb-5 bg-[#111] p-3 rounded border border-white/10">
                       <label className="block text-[10px] text-[#FFC000] font-bold mb-2 uppercase tracking-widest">Face Lock Global</label>
                       <div className="grid grid-cols-5 gap-1.5">
@@ -829,13 +971,21 @@
                             <span className="text-[7.5px] font-bold text-gray-400 mb-2 text-center whitespace-nowrap">@CHAR {char}</span>
                             <div className="flex flex-col gap-1.5 w-full items-center">
                                {globalFaceRefs[char]?.map((ref, idx) => (
-                                  <div key={idx} className="relative w-8 h-8 rounded border border-white/30 group">
-                                     <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref" />
-                                     <button onClick={() => removeGlobalFace(char, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-white text-xs">X</span></button>
+                                  <div key={idx} className="flex flex-col items-center w-full px-0.5">
+                                     <div className="relative w-8 h-8 rounded overflow-hidden border border-white/30 group/thumb">
+                                        <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref" />
+                                        <button onClick={() => removeGlobalFace(char, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity">
+                                           <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                     </div>
+                                     <input type="text" value={ref.partLabel || ''} onChange={(e) => updateGlobalFaceLabel(char, idx, e.target.value)} className="mt-1 w-full bg-[#111] text-[#FFC000] text-[7px] text-center font-bold border border-white/20 rounded focus:border-[#FFC000] focus:outline-none py-0.5 transition-colors" placeholder="Label" />
                                   </div>
                                ))}
                                {(globalFaceRefs[char]?.length || 0) < 5 && (
-                                  <label className="w-8 h-8 rounded border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5"><input type="file" multiple accept="image/*" onChange={(e) => handleGlobalFaceUpload(char, e)} className="hidden" /><span className="text-[12px] text-gray-500 font-bold">+</span></label>
+                                  <label className="w-8 h-8 rounded border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5 transition-colors mt-1" title={`Upload Wajah ${char}`}>
+                                     <input type="file" multiple accept="image/*" onChange={(e) => handleGlobalFaceUpload(char, e)} className="hidden" />
+                                     <span className="text-[12px] text-gray-500 font-bold">+</span>
+                                  </label>
                                )}
                             </div>
                           </div>
@@ -843,104 +993,405 @@
                       </div>
                     </div>
 
+                    {/* ASET TAMBAHAN (PRODUK / LOKASI / KARAKTER SAMPINGAN) */}
+                    <div className="mb-5 bg-[#111] p-3 rounded border border-[#00BFFF]/30">
+                      <label className="block text-[10px] text-[#00BFFF] font-bold mb-2 uppercase tracking-widest">
+                        Aset Tambahan (Produk/Lokasi/Lainnya)
+                      </label>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {[1, 2, 3, 4, 5].map(slotId => (
+                          <div key={`asset-${slotId}`} className="bg-[#050505] border border-white/20 rounded py-1.5 px-0.5 flex flex-col items-center">
+                            <span className="text-[7.5px] font-bold text-gray-400 mb-2 text-center whitespace-nowrap">SLOT {slotId}</span>
+                            <div className="flex flex-col gap-1.5 w-full items-center">
+                               {additionalAssetRefs[slotId]?.map((ref, idx) => (
+                                  <div key={idx} className="flex flex-col items-center w-full px-0.5">
+                                     <div className="relative w-8 h-8 rounded overflow-hidden border border-[#00BFFF]/50 group/thumb">
+                                        <img src={ref.previewUrl} className="w-full h-full object-cover" alt="ref asset" />
+                                        <button onClick={() => removeAdditionalAsset(slotId, idx)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity">
+                                           <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                     </div>
+                                     <input 
+                                       type="text" 
+                                       value={ref.partLabel || ''} 
+                                       onChange={(e) => updateAdditionalAssetLabel(slotId, idx, e.target.value)}
+                                       className="mt-1 w-full bg-[#111] text-[#00BFFF] text-[7px] text-center font-bold border border-white/20 rounded focus:border-[#00BFFF] focus:outline-none py-0.5 transition-colors"
+                                       placeholder={`Aset ${slotId}`}
+                                       title="Ganti nama aset ini (cth: Botol Minum)"
+                                     />
+                                  </div>
+                               ))}
+                               {(additionalAssetRefs[slotId]?.length || 0) < 1 && (
+                                  <label className="w-8 h-8 rounded border border-dashed border-[#00BFFF]/40 hover:border-[#00BFFF] flex items-center justify-center cursor-pointer bg-[#00BFFF]/5 transition-colors mt-1" title={`Upload Aset Slot ${slotId}`}>
+                                     <input type="file" accept="image/*" onChange={(e) => handleAdditionalAssetUpload(slotId, e)} className="hidden" />
+                                     <span className="text-[12px] text-[#00BFFF] font-bold">+</span>
+                                  </label>
+                               )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[8px] text-gray-500 mt-2 italic">*Upload foto ekstra (Produk, Benda, Lokasi) lalu ubah label teksnya. Gambar ini akan dilampirkan otomatis saat merender ke AI.</p>
+                    </div>
+
                     <div className="mb-5">
                       <label className="block text-[10px] text-white font-bold mb-1.5 uppercase tracking-widest">Ide Adegan</label>
-                      <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="Deskripsi aksi, lokasi..." className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-gray-300 h-20" />
+                      <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="Deskripsi aksi, lokasi..." className="w-full bg-[#111] border border-white/20 rounded p-2 text-[11px] text-gray-300 focus:outline-none focus:border-[#FFC000] h-20 resize-none" />
                     </div>
 
-                    {error && <div className="text-red-400 text-[10px] mb-4 p-2 bg-red-900/20 border border-red-500/50 uppercase">{error}</div>}
-                    {historySuccessMsg && <div className="text-emerald-400 text-[10px] mb-4 p-2 bg-emerald-900/20 border border-emerald-500/50 uppercase">{historySuccessMsg}</div>}
+                    <div className="mb-5">
+                      <label className="block text-[10px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Revisi Adegan (Opsional)</label>
+                      <textarea value={sceneRevision} onChange={(e) => setSceneRevision(e.target.value)} placeholder="Cth: Pastikan ada adegan..." className="w-full bg-[#1a1400] border border-[#FFC000]/40 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] h-16 resize-none" />
+                    </div>
+
+                    {error && <div className="text-red-400 text-[10px] mb-4 p-2 bg-red-900/20 border border-red-500/50 uppercase tracking-wider">{error}</div>}
+                    {historySuccessMsg && <div className="text-emerald-400 text-[10px] mb-4 p-2 bg-emerald-900/20 border border-emerald-500/50 uppercase tracking-wider">{historySuccessMsg}</div>}
 
                     <div className="flex flex-col gap-2 mt-4">
-                      <button onClick={generateStoryboard} disabled={isGeneratingStoryboard} className="w-full bg-white text-black font-black rounded py-3 text-[11px] uppercase hover:bg-gray-200">{isGeneratingStoryboard ? "MERACIK..." : "GENERATE PLAN"}</button>
-                      <button onClick={saveToHistory} className="w-full bg-transparent border border-white/30 text-gray-400 hover:text-white font-bold rounded py-2 text-[10px] uppercase mt-1">Simpan Histori</button>
+                      <button onClick={generateStoryboard} disabled={isGeneratingStoryboard} className="w-full bg-white text-black font-black rounded py-3 transition-colors text-[11px] uppercase tracking-widest hover:bg-gray-200">
+                        {isGeneratingStoryboard ? "MERACIK..." : "GENERATE PLAN"}
+                      </button>
+                      <button onClick={saveToHistory} disabled={isGeneratingStoryboard || isExtendingStoryboard} className="w-full bg-transparent border border-white/30 text-gray-400 hover:text-white font-bold rounded py-2 transition-colors text-[10px] uppercase tracking-widest mt-1">
+                        Simpan Histori
+                      </button>
                     </div>
+
+                    {storyboard.length > 0 && (
+                      <div className="mt-5 p-3 border border-[#E50914]/40 bg-[#E50914]/10 rounded">
+                        <label className="block text-[10px] text-[#FFC000] font-bold mb-2 uppercase tracking-widest">Perpanjang Cerita</label>
+                        <div className="flex gap-2">
+                          <select value={extendPartCount} onChange={(e) => setExtendPartCount(Number(e.target.value))} className="bg-[#111] border border-[#E50914]/40 rounded p-2 text-[11px] text-white focus:outline-none focus:border-[#FFC000] uppercase w-1/3">
+                            <option value={1}>+ 1 Shot</option><option value={2}>+ 2 Shots</option><option value={3}>+ 3 Shots</option>
+                            <option value={4}>+ 4 Shots</option><option value={5}>+ 5 Shots</option>
+                          </select>
+                          <button onClick={extendStoryboard} disabled={isExtendingStoryboard} className="w-2/3 bg-[#E50914] text-white font-black rounded py-2 transition-colors text-[10px] uppercase tracking-widest hover:bg-red-700">
+                            {isExtendingStoryboard ? "MERACIK..." : "PERPANJANG"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* KOLOM KANAN */}
+                {/* KOLOM KANAN: OUTPUT STORYBOARD */}
                 <div className="lg:col-span-9 relative min-h-[500px]">
+                  <div className="h-full flex flex-col">
                     {storyboard.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center border border-white/20 rounded p-12 text-center opacity-50 bg-[#050505]">
                         <h3 className="text-white font-bold tracking-widest text-[16px] mb-2 uppercase">Workspace Kosong</h3>
+                        <p className="text-gray-500 text-[12px] max-w-md uppercase tracking-wider">Isi konfigurasi dan generate plan untuk memulai.</p>
                       </div>
                     ) : (
                       <div className="flex flex-col border border-white/20 bg-[#000]">
+                        
                         <div className="flex justify-between items-center p-3 border-b border-white/20 bg-[#050505]">
-                          <div className="text-white font-bold text-[11px] uppercase ml-2">{storyboard.length} SHOTS TIMELINE</div>
+                          <div className="text-white font-bold text-[11px] tracking-widest uppercase ml-2">{storyboard.length} SHOTS TIMELINE</div>
+                          <button onClick={generateAllImages} disabled={isGeneratingAllImages} className="bg-[#FFC000] hover:bg-yellow-500 text-black font-black py-1.5 px-4 rounded-sm text-[10px] uppercase tracking-widest transition-colors">
+                            {isGeneratingAllImages ? "RENDERING..." : "RENDER ALL RESULTS"}
+                          </button>
                         </div>
 
-                        {storyboard.map((shot, index) => {
-                          const isRendering = generatingImages[index] || generatingVideos[index];
-                          const refsForShot = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
-                          const currentVideoEngine = videoEngines[index] || "Veo3 Lite"; 
+                        <div className="hidden md:flex border-b border-white/20 bg-[#000]">
+                           <div className="w-[12%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Scene</div>
+                           <div className="w-[33%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Storyboard / Shot Plan</div>
+                           <div className="w-[25%] text-[10px] text-white font-bold uppercase tracking-widest text-center py-3 border-r border-white/20">Prompt / Shot Detail</div>
+                           <div className="w-[30%] text-[10px] text-[#FFC000] font-black uppercase tracking-widest text-center py-3">Video Result <span className="font-normal">(AI GENERATED)</span></div>
+                        </div>
 
-                          return (
-                            <div key={index} className="flex flex-col md:flex-row border-b border-white/20 relative">
-                              {isRendering && (
-                                <div className="absolute inset-0 z-50 bg-[#000]/85 flex flex-col items-center justify-center">
-                                  <span className="text-[#FFC000] font-bold text-[14px] animate-pulse">PROCESSING...</span>
-                                </div>
-                              )}
+                        <div className="flex flex-col">
+                          {storyboard.map((shot, index) => {
+                            const isRendering = generatingImages[index] || revisingImage[index] || revisingMotion[index];
+                            const isGeneratingVideo = generatingVideos[index];
+                            const refsForShot = [shot.faceReference1, shot.faceReference2, shot.faceReference3, shot.faceReference4, shot.faceReference5].filter(Boolean);
+                            const currentVideoEngine = videoEngines[index] || "Veo3 Lite"; 
 
-                              <div className="w-full md:w-[12%] flex flex-col items-center justify-center p-4 border-r border-white/20 bg-[#050505]">
-                                 <span className="font-black text-4xl text-white">{(index + 1).toString().padStart(2, '0')}</span>
-                                 <div className="flex flex-wrap justify-center gap-1 w-full px-1 mt-4">
-                                   {refsForShot.map((ref, i) => (
-                                      <div key={i} className="relative w-7 h-7"><img src={ref.previewUrl} className="w-full h-full object-cover border border-[#FFC000]/40" /></div>
-                                   ))}
-                                   {refsForShot.length < 5 && (
-                                     <label className="w-7 h-7 border border-dashed border-white/30 flex items-center justify-center cursor-pointer bg-white/5"><input type="file" multiple accept="image/*" onChange={(e) => handleLocalFaceUpload(index, e)} className="hidden" /><span className="text-[10px] text-gray-500">+</span></label>
-                                   )}
-                                 </div>
-                              </div>
-                              
-                              <div className="w-full md:w-[33%] p-4 border-r border-white/20 flex flex-col">
-                                 <textarea value={shot.motionPrompt} onChange={(e) => handleMotionPromptManualEdit(index, e.target.value)} className="text-[11px] text-gray-300 bg-transparent w-full h-full min-h-[120px] resize-none border border-transparent focus:border-white/10" />
-                                 <div className="mt-auto bg-[#111] p-2 rounded border border-white/10 mt-4">
-                                    <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase">Generate Video</label>
-                                    <div className="flex gap-2">
-                                      <select value={currentVideoEngine} onChange={(e) => handleVideoEngineChange(index, e.target.value)} className="bg-[#050505] border border-white/20 rounded p-2 text-[10px] text-white w-1/2">
-                                        <option value="Veo3 Lite">Veo3 Lite</option>
-                                        <option value="Gemini Omni">Gemini Omni</option>
-                                      </select>
-                                      <button onClick={() => generateVideo(index)} disabled={!shot.imageUrl} className={`w-1/2 font-black py-2 rounded-sm text-[10px] ${!shot.imageUrl ? 'bg-gray-800 text-gray-500' : 'bg-[#FFC000] text-black hover:bg-yellow-500'}`}>GENERATE</button>
+                            return (
+                              <div key={index} className="flex flex-col md:flex-row border-b border-white/20 relative">
+                                {(isRendering || isGeneratingVideo) && (
+                                  <div className="absolute inset-0 z-50 bg-[#000]/85 backdrop-blur-sm flex flex-col items-center justify-center border border-[#FFC000]/50">
+                                    <div className="relative flex items-center justify-center w-16 h-16 mb-3">
+                                      <div className="absolute inset-0 border-[3px] border-white/10 border-t-[#FFC000] rounded-full animate-spin"></div>
+                                      <div className="absolute inset-1.5 border-[3px] border-transparent border-t-red-600 rounded-full animate-spin" style={{ animationDirection: 'reverse' }}></div>
+                                      <img src={bangProLogoUrl} alt="Loading" className="w-8 h-8 object-contain animate-pulse" />
                                     </div>
-                                 </div>
-                              </div>
+                                    <span className="text-[#FFC000] font-bold tracking-widest text-[10px] animate-pulse uppercase">{isGeneratingVideo ? "GENERATING VIDEO..." : "PROCESSING IMAGE..."}</span>
+                                  </div>
+                                )}
 
-                              <div className="w-full md:w-[25%] p-4 border-r border-white/20 bg-[#050505] flex flex-col">
-                                 <textarea value={shot.imagePrompt} onChange={(e) => handleImagePromptManualEdit(index, e.target.value)} className="text-[10px] text-gray-200 bg-[#2a0505] border border-red-600/60 w-full min-h-[120px] resize-none p-2 mb-2" />
-                                 <button onClick={() => generateImage(index)} className="w-full font-black py-2.5 rounded-sm bg-transparent border border-[#FFC000] text-[#FFC000] hover:bg-[#FFC000] hover:text-black mt-auto text-[10px]">GENERATE IMAGE</button>
-                              </div>
-
-                              <div className="w-full md:w-[30%] bg-[#000] p-1 flex items-center justify-center relative group">
-                                 {shot.imageUrl ? (
-                                    <div className="relative w-full h-full min-h-[180px] bg-black">
-                                       {shot.videoUrl && showVideoPreview[index] ? (
-                                          <video src={shot.videoUrl} className="w-full h-full object-cover" controls autoPlay loop muted />
-                                       ) : (
-                                          <img src={shot.imageUrl} className="w-full h-full object-cover cursor-pointer" onClick={() => setPreviewImage({ url: shot.imageUrl })} />
+                                <div className="w-full md:w-[12%] flex flex-col items-center justify-center p-4 border-r border-white/20 bg-[#050505]">
+                                   <span className="font-black text-4xl text-white tracking-tighter">{(index + 1).toString().padStart(2, '0')}</span>
+                                   <span className="text-gray-400 text-[9px] font-bold tracking-widest uppercase text-center mt-2 leading-tight">{shot.shotNumber.split(':')[0]}<br/>SHOT</span>
+                                   
+                                   <div className="mt-4 flex flex-col items-center border-t border-white/10 pt-3 w-full">
+                                     <span className="text-[8px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest text-center">
+                                       {shot.focusedCharacters && shot.focusedCharacters.length > 0 ? `@CHAR ${shot.focusedCharacters.join(', ')}` : "MANUAL FACE"}
+                                     </span>
+                                     <div className="flex flex-wrap justify-center gap-1 w-full px-1">
+                                       {refsForShot.map((ref, i) => (
+                                         <div key={i} className="relative group/local w-7 h-7" title={ref.partLabel || `Ref ${i+1}`}>
+                                           <img src={ref.previewUrl} alt={`Ref ${i+1}`} className="w-full h-full object-cover rounded-sm border border-[#FFC000]/40 opacity-80 group-hover/local:opacity-100 transition-opacity" />
+                                           <button onClick={() => removeLocalFace(index, i)} className="absolute inset-0 bg-red-600/80 flex items-center justify-center opacity-0 group-hover/local:opacity-100 transition-opacity rounded-sm">
+                                             <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                           </button>
+                                         </div>
+                                       ))}
+                                       {refsForShot.length < 5 && (
+                                         <label className="w-7 h-7 rounded-sm border border-dashed border-white/30 hover:border-[#FFC000] flex items-center justify-center cursor-pointer bg-white/5 transition-colors" title="Tambah / Ubah Wajah">
+                                           <input type="file" multiple accept="image/*" onChange={(e) => handleLocalFaceUpload(index, e)} className="hidden" />
+                                           <span className="text-[10px] text-gray-500 font-bold">+</span>
+                                         </label>
                                        )}
-                                       {shot.videoUrl && shot.imageUrl && (
-                                          <button onClick={() => setShowVideoPreview(prev => ({ ...prev, [index]: !prev[index] }))} className="absolute bottom-2 right-2 bg-black/60 text-white text-[9px] px-2 py-1 rounded border border-white/20">Toggle Video</button>
-                                        )}
-                                    </div>
-                                 ) : (
-                                    <div className="w-full h-full min-h-[180px] bg-[#050505] border border-white/5 flex items-center justify-center"><span className="text-[10px] text-gray-600">NO RESULT</span></div>
-                                 )}
+                                     </div>
+                                   </div>
+                                </div>
+                                
+                                <div className="w-full md:w-[33%] p-4 border-r border-white/20 bg-[#000] flex flex-col">
+                                   <textarea value={shot.motionPrompt} onChange={(e) => handleMotionPromptManualEdit(index, e.target.value)} className="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap bg-transparent w-full h-full min-h-[120px] resize-none focus:outline-none focus:bg-[#111] p-2 rounded border border-transparent hover:border-white/10" />
+                                   <button onClick={() => handleCopy(shot.motionPrompt, `motion-${index}`)} className="mt-2 text-[9px] font-bold uppercase tracking-widest border border-white/20 text-gray-400 hover:text-white hover:bg-white/10 py-1.5 px-3 rounded w-max transition-colors mb-4">
+                                     {copiedStates[`motion-${index}`] ? "Tersalin!" : "Salin Motion Prompt"}
+                                   </button>
+
+                                   {/* VIDEO GENERATION CONTROLS */}
+                                   <div className="mt-auto bg-[#111] p-2 rounded border border-white/10">
+                                      <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Generate Video (Dari Image & Motion Prompt)</label>
+                                      <div className="flex gap-2">
+                                        <select 
+                                          value={currentVideoEngine} 
+                                          onChange={(e) => handleVideoEngineChange(index, e.target.value)} 
+                                          className="bg-[#050505] border border-white/20 rounded p-2 text-[10px] text-white focus:outline-none focus:border-[#FFC000] uppercase w-1/2"
+                                          disabled={!shot.imageUrl || isGeneratingVideo}
+                                        >
+                                          <option value="Veo3 Lite">Veo3 Lite</option>
+                                          <option value="Gemini Omni">Gemini Omni</option>
+                                        </select>
+                                        <button 
+                                          onClick={() => generateVideo(index)} 
+                                          disabled={!shot.imageUrl || isGeneratingVideo} 
+                                          className={`w-1/2 font-black py-2 rounded-sm transition-colors text-[10px] uppercase tracking-widest text-center ${!shot.imageUrl || isGeneratingVideo ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-[#FFC000] text-black hover:bg-yellow-500'}`}
+                                        >
+                                          {isGeneratingVideo ? "GENERATING..." : "GENERATE VIDEO"}
+                                        </button>
+                                      </div>
+                                      {!shot.imageUrl && <p className="text-[8px] text-red-400 mt-1 italic">*Generate image terlebih dahulu.</p>}
+                                   </div>
+                                </div>
+
+                                <div className="w-full md:w-[25%] p-4 border-r border-white/20 bg-[#050505] flex flex-col">
+                                   <div className="text-[10px] text-red-400 font-bold mb-1.5 uppercase tracking-widest">Edit Prompt (Jika Meleset)</div>
+                                   <textarea value={shot.imagePrompt} onChange={(e) => handleImagePromptManualEdit(index, e.target.value)} className="text-[10px] text-gray-200 leading-relaxed bg-[#2a0505] border border-red-600/60 focus:border-red-500 focus:bg-[#3a0808] w-full min-h-[120px] resize-none p-2 rounded mb-2 tracking-wide focus:outline-none transition-colors" />
+                                   <button onClick={() => handleCopy(shot.imagePrompt, `image-${index}`)} className="mb-4 text-[9px] font-bold uppercase tracking-widest border border-red-500/30 text-red-400 hover:text-white hover:bg-red-600 py-1.5 px-3 rounded w-max transition-colors">
+                                     {copiedStates[`image-${index}`] ? "Tersalin!" : "Salin Image Prompt"}
+                                   </button>
+                                   
+                                   <div className="mt-auto bg-[#1a1400] p-2 rounded border border-[#FFC000]/40 mb-2">
+                                      <label className="block text-[9px] text-[#FFC000] font-bold mb-1.5 uppercase tracking-widest">Instruksi Revisi Instan</label>
+                                      <textarea value={imageRevisionInputs[index] || ""} onChange={(e) => setImageRevisionInputs(prev => ({ ...prev, [index]: e.target.value }))} placeholder="Cth: Karakter memakai kacamata hitam..." className="w-full bg-[#050505] border border-[#FFC000]/30 text-white text-[10px] p-2 rounded focus:border-[#FFC000] focus:outline-none resize-none h-14" />
+                                   </div>
+
+                                   <button onClick={() => generateImage(index)} disabled={generatingImages[index]} className={`w-full font-black py-2.5 rounded-sm transition-colors text-[10px] uppercase tracking-widest text-center ${imageRevisionInputs[index] ? 'bg-[#FFC000] text-black hover:bg-yellow-500' : 'bg-transparent border border-[#FFC000] text-[#FFC000] hover:bg-[#FFC000] hover:text-black'}`}>
+                                     {generatingImages[index] ? "PROCESSING..." : (imageRevisionInputs[index] ? "TERAPKAN REVISI & RENDER" : (shot.imageUrl ? "RE-GENERATE IMAGE" : "GENERATE IMAGE"))}
+                                   </button>
+                                </div>
+
+                                <div className="w-full md:w-[30%] bg-[#000] p-1 flex items-center justify-center relative group/preview">
+                                   <div className="hidden md:block absolute -left-3 top-1/2 -translate-y-1/2 text-[#FFC000] z-10"><svg className="w-6 h-6 drop-shadow-md" fill="currentColor" viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></div>
+                                   
+                                   {shot.imageUrl ? (
+                                      <div className="relative w-full h-full min-h-[180px] bg-black">
+                                         {/* Toggle between Image and Video view if video exists */}
+                                         {shot.videoUrl && showVideoPreview[index] ? (
+                                            <video 
+                                              src={shot.videoUrl} 
+                                              className="w-full h-full object-cover" 
+                                              controls 
+                                              autoPlay 
+                                              loop 
+                                              muted
+                                              onClick={() => setPreviewVideo({ url: shot.videoUrl, title: shot.shotNumber })}
+                                            />
+                                         ) : (
+                                            <img 
+                                              src={shot.imageUrl} 
+                                              alt={shot.shotNumber} 
+                                              className="w-full h-full object-cover cursor-pointer" 
+                                              onClick={() => setPreviewImage({ url: shot.imageUrl, title: shot.shotNumber })}
+                                            />
+                                         )}
+
+                                         {/* Hover overlay for fullscreen view */}
+                                         <div className={`absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover/preview:opacity-100 transition-opacity pointer-events-none`}>
+                                            <div className="w-10 h-10 rounded-full border-2 border-white flex items-center justify-center bg-black/50"><svg className="w-4 h-4 text-white ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg></div>
+                                         </div>
+
+                                         {/* Toggle button if both image and video exist */}
+                                         {shot.videoUrl && shot.imageUrl && (
+                                            <button 
+                                              onClick={() => setShowVideoPreview(prev => ({ ...prev, [index]: !prev[index] }))} 
+                                              className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 text-white text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded border border-white/20 transition-colors z-20"
+                                            >
+                                              {showVideoPreview[index] ? "Lihat Gambar" : "Lihat Video"}
+                                            </button>
+                                          )}
+                                      </div>
+                                   ) : (
+                                      <div className="w-full h-full min-h-[180px] bg-[#050505] border border-white/5 flex items-center justify-center"><span className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">NO RESULT YET</span></div>
+                                   )}
+                                </div>
+
                               </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
+                    
+                    {/* FOOTER GALLERY - Menampilkan Video jika ada, atau Gambar */}
+                    {storyboard.some(s => s.imageUrl) && (
+                      <div className="mt-6 border-t-2 border-[#FFC000] pt-4 px-2">
+                         <h3 className="text-[#FFC000] font-black text-[12px] uppercase tracking-widest mb-3">FINAL RESULT <span className="text-gray-400 font-normal ml-1">(AI VIDEO OUTPUT)</span></h3>
+                         <div className="flex gap-1 overflow-x-auto pb-2 custom-scrollbar">
+                            {storyboard.filter(s => s.imageUrl).map((shot, idx) => (
+                               <div key={idx} className="flex-shrink-0 w-64 aspect-video relative group cursor-pointer border border-white/20 bg-black">
+                                  {shot.videoUrl ? (
+                                    <video 
+                                      src={shot.videoUrl} 
+                                      className="w-full h-full object-cover" 
+                                      muted 
+                                      onMouseOver={event => event.target.play()} 
+                                      onMouseOut={event => event.target.pause()}
+                                      onClick={() => setPreviewVideo({ url: shot.videoUrl, title: shot.shotNumber })}
+                                    />
+                                  ) : (
+                                    <img 
+                                      src={shot.imageUrl} 
+                                      className="w-full h-full object-cover" 
+                                      alt={`Final ${idx}`} 
+                                      onClick={() => setPreviewImage({ url: shot.imageUrl, title: shot.shotNumber })}
+                                    />
+                                  )}
+                                  {shot.videoUrl && <div className="absolute top-1 right-1 bg-[#FFC000] text-black text-[8px] font-bold px-1.5 py-0.5 rounded-sm">VIDEO READY</div>}
+                               </div>
+                            ))}
+                         </div>
+                      </div>
+                    )}
+
+                  </div>
                 </div>
               </main>
 
+              <footer className="mt-8 bg-[#000] border-t border-white/20 py-4 px-4 md:px-8 relative z-10 flex flex-col md:flex-row justify-between items-center gap-4">
+                 <div className="max-w-4xl">
+                    <h4 className="text-[#FFC000] font-bold text-[11px] tracking-widest mb-1 uppercase">AI PROMPT <span className="text-gray-400 font-normal ml-1">(FULL MOVIE)</span></h4>
+                    <p className="text-gray-400 text-[10px] leading-relaxed uppercase tracking-wider">Cinematic action movie, realistic, dramatic lighting, epic scene, detailed environment, 4k, ultra realistic, high contrast, film look, motion blur, depth of field, atmospheric, ultra detail.</p>
+                 </div>
+                 <div className="flex items-center gap-4 bg-transparent border border-white/20 px-3 py-1.5 rounded-sm text-white font-bold uppercase text-[10px] tracking-wider">
+                    <span className="flex items-center bg-white text-black px-1 py-0.5"><img src={bangProLogoUrl} alt="Bang Pro" className="h-3 mr-1 object-contain" /></span>
+                    <span className="flex items-center text-gray-300"><svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>AI LABS</span>
+                    <span className="text-gray-500">AI FILMMAKING TOOLS</span>
+                 </div>
+              </footer>
+
+              {/* PREVIEW MODAL IMAGE */}
               {previewImage && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 p-4" onClick={() => setPreviewImage(null)}>
-                    <img src={previewImage.url} className="w-full h-auto max-h-[80vh] object-contain" />
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
+                  <div className="relative max-w-5xl w-full flex flex-col items-center">
+                    <div className="w-full flex justify-between items-center mb-4">
+                      <h3 className="text-[#FFC000] font-bold text-[12px] tracking-widest uppercase">SHOT PREVIEW</h3>
+                      <button onClick={() => setPreviewImage(null)} className="text-white hover:text-[#FFC000] p-2 transition-colors"><svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                    </div>
+                    <img src={previewImage.url} alt="Fullscreen Preview" className="w-full h-auto max-h-[80vh] object-contain border border-white/20" />
+                    <button onClick={() => downloadImage(previewImage.url, `Shot-${previewImage.title}.png`)} className="mt-6 border border-white/30 text-white px-8 py-2 text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-all">Download Image</button>
+                  </div>
+                </div>
+              )}
+
+              {/* PREVIEW MODAL VIDEO */}
+              {previewVideo && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm p-4 animate-[fadeIn_0.2s_ease-out]">
+                  <div className="relative max-w-5xl w-full flex flex-col items-center">
+                    <div className="w-full flex justify-between items-center mb-4">
+                      <h3 className="text-[#FFC000] font-bold text-[12px] tracking-widest uppercase">VIDEO PREVIEW</h3>
+                      <button onClick={() => setPreviewVideo(null)} className="text-white hover:text-[#FFC000] p-2 transition-colors"><svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                    </div>
+                    <video src={previewVideo.url} className="w-full h-auto max-h-[80vh] object-contain border border-white/20" controls autoPlay loop />
+                    <button onClick={() => downloadVideo(previewVideo.url, `Shot-${previewVideo.title}.mp4`)} className="mt-6 border border-white/30 text-white px-8 py-2 text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-all">Download Video</button>
+                  </div>
+                </div>
+              )}
+
+              {isHistoryOpen && (
+                <div className="fixed inset-0 z-[110] bg-[#000] text-gray-200 overflow-y-auto">
+                  <div className="sticky top-0 z-50 bg-[#000] border-b border-white/20 px-4 md:px-8 py-4 flex justify-between items-center shadow-md">
+                    <div className="flex items-center">
+                      <button onClick={() => setIsHistoryOpen(false)} className="mr-4 text-white border border-white/20 px-3 py-1.5 rounded text-[10px] uppercase font-bold tracking-widest hover:bg-white/10 transition-all">Kembali</button>
+                      <h2 className="text-lg font-black text-white uppercase tracking-widest flex items-center">Histori Proyek <span className="text-[#FFC000] ml-2">Ailabs</span></h2>
+                    </div>
+                  </div>
+                  <div className="max-w-5xl mx-auto p-4 md:p-8">
+                    {projectHistory.length === 0 ? (
+                      <div className="text-center mt-20 border border-white/20 p-10 bg-[#050505]"><h3 className="text-white font-bold tracking-widest uppercase">Histori Kosong</h3></div>
+                    ) : (
+                      <div className="space-y-8">
+                        {projectHistory.map((item) => (
+                          <div key={item.id} className="bg-[#050505] border border-white/20 rounded p-6">
+                            <div className="flex justify-between items-start mb-6 border-b border-white/10 pb-4">
+                              <div>
+                                <div className="text-[10px] text-[#FFC000] font-bold tracking-widest uppercase mb-1">{item.date}</div>
+                                <h3 className="text-white font-bold text-lg uppercase tracking-wider">{item.genre}</h3>
+                                {item.idea && <p className="text-gray-400 text-[10px] mt-2 mb-2 pr-4 italic line-clamp-2 uppercase">"{item.idea}"</p>}
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => loadFromHistory(item)} className="bg-white text-black px-4 py-2 text-[10px] font-bold uppercase tracking-widest hover:bg-gray-300">Muat Ulang</button>
+                                <button onClick={() => deleteHistory(item.id)} className="border border-red-500 text-red-500 px-3 py-2 hover:bg-red-500 hover:text-white transition-colors"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                              </div>
+                            </div>
+                            <div className="flex flex-col gap-3">
+                               {item.storyboard.map((s, idx) => (
+                                  <div key={idx} className="flex flex-col md:flex-row gap-4 border border-white/10 p-3 bg-[#111] rounded items-start">
+                                     <div className="w-full md:w-[20%] flex-shrink-0">
+                                        <div className="aspect-video bg-[#050505] border border-white/20 relative rounded overflow-hidden">
+                                           {/* Tampilkan thumbnail video jika ada, jika tidak tampilkan gambar */}
+                                           {s.videoUrl ? (
+                                             <video src={s.videoUrl} className="w-full h-full object-cover" muted /> 
+                                           ) : (
+                                             s.imageUrl ? <img src={s.imageUrl} className="w-full h-full object-cover" alt={`History Shot ${idx+1}`} /> : <div className="absolute inset-0 flex items-center justify-center text-[9px] text-gray-600 font-bold uppercase tracking-widest">NO IMAGE</div>
+                                           )}
+                                           <div className="absolute top-1 left-1 bg-black/80 px-1.5 py-0.5 text-[8px] text-[#FFC000] font-bold rounded border border-white/10">SHOT {idx+1} {s.videoUrl && "(VIDEO)"}</div>
+                                        </div>
+                                     </div>
+                                     <div className="w-full md:w-[80%] flex flex-col md:flex-row gap-3">
+                                        <div className="w-full md:w-1/2 flex flex-col">
+                                           <div className="flex justify-between items-center mb-1"><span className="text-[9px] text-red-400 font-bold tracking-widest uppercase">Image Prompt</span></div>
+                                           <div className="bg-[#050505] p-2 text-[9px] text-gray-300 rounded border border-white/5 h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed">{s.imagePrompt}</div>
+                                        </div>
+                                        <div className="w-full md:w-1/2 flex flex-col">
+                                           <div className="flex justify-between items-center mb-1"><span className="text-[9px] text-[#FFC000] font-bold tracking-widest uppercase">Motion Prompt</span></div>
+                                           <div className="bg-[#050505] p-2 text-[9px] text-gray-300 rounded border border-white/5 h-24 overflow-y-auto whitespace-pre-wrap leading-relaxed">{s.motionPrompt}</div>
+                                        </div>
+                                     </div>
+                                  </div>
+                               ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(isGeneratingStoryboard || isExtendingStoryboard) && (
+                <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-black/90 backdrop-blur-md animate-[fadeIn_0.2s_ease-out]">
+                  <div className="relative flex items-center justify-center w-28 h-28 mb-6">
+                    <div className="absolute inset-0 border-4 border-white/10 border-t-[#FFC000] rounded-full animate-spin"></div>
+                    <div className="absolute inset-2 border-4 border-transparent border-t-red-600 rounded-full animate-spin" style={{ animationDirection: 'reverse' }}></div>
+                    <img src={bangProLogoUrl} alt="Loading" className="w-14 h-14 object-contain animate-pulse" />
+                  </div>
+                  <h2 className="text-[#FFC000] font-black text-[14px] tracking-widest uppercase animate-pulse text-center">
+                    {isGeneratingStoryboard ? "MERACIK KONSEP STORYBOARD..." : "MEMPERPANJANG ALUR CERITA..."}
+                  </h2>
+                  <p className="text-gray-500 text-[10px] mt-2 uppercase tracking-widest text-center">AI Sedang Bekerja... Mohon Tunggu Brow</p>
                 </div>
               )}
             </div>
