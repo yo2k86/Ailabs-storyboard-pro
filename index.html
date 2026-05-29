@@ -550,7 +550,9 @@ IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
             [Insert Film look matching ${genre}].
             Heavy grain.
             Natural particle physics V1.02.
-            Premium cinematic motion blur.`;
+            Premium cinematic motion blur.
+            
+            IMPORTANT OUTPUT FORMAT: You MUST return a valid JSON object. The object MUST contain a single key "storyboard" which holds the array of your generated shots. Example: { "storyboard": [ { "shotNumber": "...", ... } ] }. Do not include markdown formatting like \`\`\`json.`;
           };
 
           const generateStoryboard = async () => {
@@ -559,34 +561,29 @@ IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
 
             const systemPrompt = getSystemPromptText();
             const payload = {
-              contents: [{ parts: [{ text: `Genre: ${genre}\nOriginal Idea: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION FROM USER: ${sceneRevision} (You MUST integrate this revision logically into the new storyboard sequence.)\n` : ''}Required Parts: ${partCount === "Otomatis" ? "Auto" : partCount}` }] }],
-              systemInstruction: { parts: [{ text: systemPrompt }] },
-              generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "ARRAY",
-                  items: {
-                    type: "OBJECT",
-                    properties: { 
-                      shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
-                      focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
-                      imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
-                    },
-                    required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
-                  }
-                }
-              }
+              prompt: `Genre: ${genre}\nOriginal Idea: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION FROM USER: ${sceneRevision} (You MUST integrate this revision logically into the new storyboard sequence.)\n` : ''}Required Parts: ${partCount === "Otomatis" ? "Auto" : partCount}`,
+              systemInstruction: systemPrompt
             };
 
             try {
               // Memanggil backend vercel
               const url = '/api/generate-text';
               const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-              const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+              
+              // Menyesuaikan dengan response backend OpenRouter: res.status(200).json({ text: textResponse })
+              const textResponse = result.text;
               
               if (textResponse) {
-                const parsed = JSON.parse(textResponse);
-                const initializedStoryboard = parsed.map(shot => {
+                // Hapus kemungkinan markdown backticks dari response (berjaga-jaga jika model ngeyel)
+                const cleanText = textResponse.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                let parsed = JSON.parse(cleanText);
+                
+                // Ambil array dari dalam object jika ada (karena json_object mode OpenRouter)
+                const storyboardArray = Array.isArray(parsed) ? parsed : (parsed.storyboard || parsed.shots || Object.values(parsed)[0]);
+                
+                if (!Array.isArray(storyboardArray)) throw new Error("Format output LLM bukan Array");
+
+                const initializedStoryboard = storyboardArray.map(shot => {
                   let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
                   if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
                     let allRefs = [];
@@ -600,7 +597,7 @@ IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
                   return newShot;
                 });
                 setStoryboard(initializedStoryboard);
-              } else throw new Error("Respons teks kosong");
+              } else throw new Error("Respons teks kosong dari OpenRouter");
             } catch (err) { setError(`Gagal menghasilkan prompt. Detail: ${err.message}`); } 
             finally { setIsGeneratingStoryboard(false); }
           };
@@ -611,34 +608,28 @@ IF NO CHARACTERS ARE VISIBLE (INSERT SHOT / ENVIRONMENT):
 
             const systemPrompt = getSystemPromptText();
             const payload = {
-              contents: [{ parts: [{ text: `Genre: ${genre}\nIdea Continuation: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION: ${sceneRevision}\n` : ''}Required New Parts: ${extendPartCount}` }] }],
-              systemInstruction: { parts: [{ text: systemPrompt }] },
-              generationConfig: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: "ARRAY",
-                  items: {
-                    type: "OBJECT",
-                    properties: { 
-                      shotNumber: { type: "STRING" }, timecode: { type: "STRING" }, needsFaceReference: { type: "BOOLEAN" }, 
-                      focusedCharacters: { type: "ARRAY", items: { type: "STRING" } }, hasFemaleCharacter: { type: "BOOLEAN" }, 
-                      imagePrompt: { type: "STRING" }, motionPrompt: { type: "STRING" } 
-                    },
-                    required: ["shotNumber", "timecode", "needsFaceReference", "focusedCharacters", "hasFemaleCharacter", "imagePrompt", "motionPrompt"]
-                  }
-                }
-              }
+              prompt: `Genre: ${genre}\nIdea Continuation: ${idea}\n${sceneRevision.trim() ? `CRITICAL REVISION INSTRUCTION: ${sceneRevision}\n` : ''}Required New Parts: ${extendPartCount}`,
+              systemInstruction: systemPrompt
             };
 
             try {
               // Memanggil backend vercel
               const url = '/api/generate-text';
               const result = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-              const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+              
+              // Menyesuaikan dengan response backend OpenRouter
+              const textResponse = result.text;
               
               if (textResponse) {
-                const parsed = JSON.parse(textResponse);
-                const initializedStoryboard = parsed.map(shot => {
+                const cleanText = textResponse.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                let parsed = JSON.parse(cleanText);
+                
+                // Ambil array dari dalam object jika ada
+                const storyboardArray = Array.isArray(parsed) ? parsed : (parsed.storyboard || parsed.shots || Object.values(parsed)[0]);
+                
+                if (!Array.isArray(storyboardArray)) throw new Error("Format output LLM bukan Array");
+
+                const initializedStoryboard = storyboardArray.map(shot => {
                   let newShot = { ...shot, imageUrl: null, videoUrl: null, faceReference1: null, faceReference2: null, faceReference3: null, faceReference4: null, faceReference5: null };
                   if (shot.needsFaceReference && Array.isArray(shot.focusedCharacters) && shot.focusedCharacters.length > 0) {
                     let allRefs = [];
