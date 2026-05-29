@@ -9,31 +9,21 @@ export default async function handler(req, res) {
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY belum disetting di Vercel' });
 
     try {
-        // 1. Mengambil teks prompt dari payload Frontend
+        // 1. Mengambil teks prompt yang dikirim oleh App.jsx
         const parts = req.body.contents?.[0]?.parts || [];
         const textPart = parts.find(p => p.text);
         if (!textPart) throw new Error("Prompt teks tidak ditemukan");
         
         let promptText = textPart.text;
 
-        // 2. Deteksi otomatis Aspect Ratio dari prompt
-        let aspectRatio = "16:9";
-        if (promptText.includes("9:16")) aspectRatio = "9:16";
-        else if (promptText.includes("1:1")) aspectRatio = "1:1";
-
-        // 3. Payload khusus untuk Model Google Imagen 3
+        // 2. Format Payload khusus untuk IMAGEN 4.0 
         const imagenPayload = {
-            instances: [
-                { prompt: promptText }
-            ],
-            parameters: {
-                sampleCount: 1,
-                aspectRatio: aspectRatio
-            }
+            instances: { prompt: promptText },
+            parameters: { sampleCount: 1 }
         };
 
-        // Menggunakan Endpoint khusus IMAGEN 3 dari Google AI Studio
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${apiKey}`;
+        // 3. MENGGUNAKAN IMAGEN 4.0 (Model Generator Gambar Terbaru Google)
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`;
 
         const response = await fetch(url, {
             method: 'POST',
@@ -45,7 +35,7 @@ export default async function handler(req, res) {
         
         if (!response.ok) throw new Error(data.error?.message || 'Google Imagen API Error');
 
-        // 4. Ekstrak gambar base64 dari Imagen 3
+        // 4. Ekstrak gambar base64 dari Imagen 4.0
         const base64Data = data.predictions?.[0]?.bytesBase64Encoded;
         if (!base64Data) throw new Error("Tidak ada gambar yang dikembalikan oleh API");
 
